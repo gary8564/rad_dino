@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rad-dino"
+version = "0.1.0"
+authors = [
+  { name="Chia-Hao Chang", email="chia.hao.chang@rwth-aachen.de" },
+]
+description = ""
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "torchaudio==2.6.0",
+    "transformers==4.51.3",
+    "lightning==2.5.0",
+    "matplotlib==3.10.0",
+    "pandas==2.2.3",
+    "tqdm==4.67.1",
+    "pydicom==3.0.1",
+    "wandb==0.19.6",
+    "einops==0.8.1",
+    "kaggle==1.7.4",
+    "datasets==3.3.2",
+    "iterative-stratification==0.1.9",
+    "pyyaml==6.0.2"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+

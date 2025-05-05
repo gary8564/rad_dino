@@ -1,0 +1,20 @@
+name: rad-dino
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - ipykernel
+  - jupyter
+  - matplotlib
+  - numpy=2.2.5
+  - opencv=4.11.0
+  - pandas
+  - scikit-learn
+  - scipy=1.15.2
+  - seaborn
+  - supervision
+  - tqdm
+  - pip
+  - pip:
+      - -e .
+    
