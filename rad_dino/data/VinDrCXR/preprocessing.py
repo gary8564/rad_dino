@@ -8,7 +8,7 @@ import os
 import pandas as pd
 import logging
 from typing import Union
-from rad_dino.logging.setup import init_logging
+from loggings.setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
 

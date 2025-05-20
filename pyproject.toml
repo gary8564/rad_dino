@@ -27,8 +27,10 @@ dependencies = [
     "datasets==3.3.2",
     "iterative-stratification==0.1.9",
     "pyyaml==6.0.2"
+    "accelerate"
+    "grad-cam"
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["rad_dino"]
 

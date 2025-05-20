@@ -5,7 +5,7 @@ from .formatters import ColoredFormatter
 __all__ = ["init_logging"]
 
 def init_logging(
-    level: int = logging.DEBUG,
+    level: int = logging.INFO,
     fmt: str = "%(asctime)s – %(filename)s – %(levelname)s : %(message)s",
     datefmt: str = "%Y-%m-%d %H:%M:%S",
 ) -> None:

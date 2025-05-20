@@ -349,3 +349,9 @@ cython_debug/
 
 # MacOS
 .DS_Store
+
+# Training log
+wandb/
+*.hpc.itc.rwth-aachen.de.*
+experiments
+runs

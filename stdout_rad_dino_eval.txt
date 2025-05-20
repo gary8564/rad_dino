@@ -1,0 +1,64 @@
+2025-05-19 23:25:09 – other.py – [33mWARNING[0m : [33mDetected kernel version 4.18.0, which is below the recommended minimum of 5.5.0; this can cause the process to hang. It is recommended to upgrade the kernel to the minimum version or higher.[0m
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+/rwthfs/rz/cluster/home/qj474765/miniforge3/envs/rad-dino/lib/python3.10/site-packages/torchvision/transforms/v2/_deprecated.py:42: UserWarning: The transform `ToTensor()` is deprecated and will be removed in a future release. Instead, please use `v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)])`.Output is equivalent up to float precision.
+  warnings.warn(
+2025-05-19 23:25:10 – inference.py – [33mWARNING[0m : [33mFailed to load scripted model: [Errno 2] No such file or directory: '/rwthfs/rz/cluster/home/qj474765/master_thesis/rad_dino/rad_dino/eval/../../runs/checkpoints_rad_dino_2025_05_18_233958/best_final_scripted.pt'. Attempting state dict instead...[0m
+Inference:   0%|          | 0/47 [00:00<?, ?it/s]Inference:   2%|▏         | 1/47 [00:29<22:18, 29.10s/it]Inference:   4%|▍         | 2/47 [00:29<09:11, 12.26s/it]Inference:   6%|▋         | 3/47 [00:30<05:03,  6.89s/it]Inference:   9%|▊         | 4/47 [00:30<03:07,  4.36s/it]Inference:  11%|█         | 5/47 [00:31<02:04,  2.96s/it]Inference:  13%|█▎        | 6/47 [00:31<01:26,  2.12s/it]Inference:  15%|█▍        | 7/47 [00:32<01:03,  1.59s/it]Inference:  17%|█▋        | 8/47 [00:52<04:59,  7.67s/it]Inference:  19%|█▉        | 9/47 [00:53<03:26,  5.43s/it]Inference:  21%|██▏       | 10/47 [00:53<02:24,  3.90s/it]Inference:  23%|██▎       | 11/47 [00:54<01:42,  2.86s/it]Inference:  26%|██▌       | 12/47 [00:54<01:14,  2.14s/it]Inference:  28%|██▊       | 13/47 [00:57<01:16,  2.25s/it]Inference:  30%|██▉       | 14/47 [00:57<00:56,  1.72s/it]Inference:  32%|███▏      | 15/47 [00:58<00:43,  1.35s/it]Inference:  34%|███▍      | 16/47 [01:14<03:03,  5.91s/it]Inference:  36%|███▌      | 17/47 [01:18<02:36,  5.22s/it]Inference:  38%|███▊      | 18/47 [01:18<01:50,  3.80s/it]Inference:  40%|████      | 19/47 [01:19<01:18,  2.81s/it]Inference:  43%|████▎     | 20/47 [01:19<00:56,  2.11s/it]Inference:  45%|████▍     | 21/47 [01:23<01:04,  2.49s/it]Inference:  47%|████▋     | 22/47 [01:23<00:47,  1.89s/it]Inference:  49%|████▉     | 23/47 [01:24<00:35,  1.47s/it]Inference:  51%|█████     | 24/47 [01:40<02:15,  5.91s/it]Inference:  53%|█████▎    | 25/47 [01:41<01:41,  4.62s/it]Inference:  55%|█████▌    | 26/47 [01:42<01:10,  3.38s/it]Inference:  57%|█████▋    | 27/47 [01:47<01:19,  3.96s/it]Inference:  60%|█████▉    | 28/47 [01:48<00:55,  2.92s/it]Inference:  62%|██████▏   | 29/47 [01:48<00:39,  2.19s/it]Inference:  64%|██████▍   | 30/47 [01:49<00:28,  1.68s/it]Inference:  66%|██████▌   | 31/47 [01:49<00:21,  1.32s/it]Inference:  68%|██████▊   | 32/47 [02:06<01:30,  6.02s/it]Inference:  70%|███████   | 33/47 [02:09<01:11,  5.07s/it]Inference:  72%|███████▏  | 34/47 [02:10<00:48,  3.70s/it]Inference:  74%|███████▍  | 35/47 [02:14<00:45,  3.82s/it]Inference:  77%|███████▋  | 36/47 [02:14<00:31,  2.82s/it]Inference:  79%|███████▊  | 37/47 [02:15<00:21,  2.12s/it]Inference:  81%|████████  | 38/47 [02:15<00:14,  1.63s/it]Inference:  83%|████████▎ | 39/47 [02:16<00:10,  1.29s/it]Inference:  85%|████████▌ | 40/47 [02:31<00:38,  5.46s/it]Inference:  87%|████████▋ | 41/47 [02:34<00:27,  4.63s/it]Inference:  89%|████████▉ | 42/47 [02:34<00:16,  3.39s/it]Inference:  91%|█████████▏| 43/47 [02:38<00:14,  3.54s/it]Inference:  94%|█████████▎| 44/47 [02:38<00:07,  2.62s/it]Inference:  96%|█████████▌| 45/47 [02:40<00:04,  2.38s/it]Inference:  98%|█████████▊| 46/47 [02:41<00:01,  1.81s/it]Inference: 100%|██████████| 47/47 [02:41<00:00,  1.42s/it]Inference: 100%|██████████| 47/47 [02:41<00:00,  3.44s/it]
+2025-05-19 23:28:00 – inference.py – [32mINFO[0m : [32mSaved predictions to ../../experiments/table/predictions.csv![0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32m------Label Lung_Opacity--------[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mNumber of GT=1: 84.0[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mConfusion Matrix:
+[[2749  167]
+ [  49   35]][0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mSensitivity: 0.42[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mSpecificity: 0.94[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32m------Label Cardiomegaly--------[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mNumber of GT=1: 309.0[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mConfusion Matrix:
+[[2539  152]
+ [ 115  194]][0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mSensitivity: 0.63[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mSpecificity: 0.94[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32m------Label Pleural_thickening--------[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mNumber of GT=1: 169.0[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mConfusion Matrix:
+[[2676  155]
+ [  80   89]][0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mSensitivity: 0.53[0m
+2025-05-19 23:28:01 – plots.py – [32mINFO[0m : [32mSpecificity: 0.95[0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32m------Label Aortic_enlargement--------[0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32mNumber of GT=1: 220.0[0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32mConfusion Matrix:
+[[2463  317]
+ [  82  138]][0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32mSensitivity: 0.63[0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32mSpecificity: 0.89[0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32m------Label Pleural_effusion--------[0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32mNumber of GT=1: 111.0[0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32mConfusion Matrix:
+[[2809   80]
+ [  27   84]][0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32mSensitivity: 0.76[0m
+2025-05-19 23:28:02 – plots.py – [32mINFO[0m : [32mSpecificity: 0.97[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32m------Label Pulmonary_fibrosis--------[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mNumber of GT=1: 217.0[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mConfusion Matrix:
+[[2636  147]
+ [  71  146]][0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mSensitivity: 0.67[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mSpecificity: 0.95[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32m------Label Tuberculosis--------[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mNumber of GT=1: 164.0[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mConfusion Matrix:
+[[2798   38]
+ [  67   97]][0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mSensitivity: 0.59[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mSpecificity: 0.99[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32m------Label No_finding--------[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mNumber of GT=1: 2051.0[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mConfusion Matrix:
+[[ 680  269]
+ [  72 1979]][0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mSensitivity: 0.96[0m
+2025-05-19 23:28:03 – plots.py – [32mINFO[0m : [32mSpecificity: 0.72[0m
+2025-05-19 23:28:03 – inference.py – [32mINFO[0m : [32mSaved ROC/PR curves to ../../experiments/figs and metrics in JSON to ../../experiments/table/metrics.json![0m
