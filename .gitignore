@@ -355,3 +355,4 @@ wandb/
 *.hpc.itc.rwth-aachen.de.*
 experiments
 runs
+stdout*

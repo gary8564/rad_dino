@@ -17,7 +17,8 @@ class DinoClassifier(nn.Module):
     
 if __name__ == "__main__":
     from transformers import AutoModel
-    # backbone = AutoModel.from_pretrained('facebook/dinov2-base')
-    backbone = AutoModel.from_pretrained("microsoft/rad-dino")
+    backbone = AutoModel.from_pretrained('facebook/dinov2-base')
+    # backbone = AutoModel.from_pretrained("microsoft/rad-dino")
     model = DinoClassifier(backbone, num_classes=10)
-    print(model)
+    for name, _ in model.named_parameters():
+        print(f"Parameter name: {name}")

@@ -7,7 +7,7 @@ import torchvision.transforms.v2 as transforms
 import pydicom
 import numpy as np
 from typing import Optional, Union
-from data.VinDrCXR.preprocessing import dicom2array, filter_subset_annot_labels
+from data.preprocessing import dicom2array, filter_subset_annot_labels
 
 class VinDrCXR_Dataset(Dataset):
     CLASSES = [

@@ -1,9 +1,9 @@
 batch_size: 64
 epochs: 100
 optim:
-  base_lr: 3e-5 
+  base_lr: 1e-5 
   weight_decay: 0.05
 lr_scheduler:
   warmup_ratio: 0.1
 early_stopping: 
-  patience: 10
+  patience: 3

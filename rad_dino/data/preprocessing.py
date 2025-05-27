@@ -13,7 +13,7 @@ init_logging()
 logger = logging.getLogger(__name__)
 
 def filter_subset_annot_labels(train_annot_path: str, test_annot_path: str, labels: Union[int, list[str]]):
-    """A subset of eight class labels is selected, given the long-tailed distribution in the original dataset.
+    """A subset of class labels is selected, given the long-tailed distribution in the original dataset.
     
     Args:
         train_annot_path: Path to annotation csv file of training dataset

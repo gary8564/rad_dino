@@ -3,6 +3,9 @@ import torch
 from transformers import AutoImageProcessor
 import logging
 from loggings.setup import init_logging
+import os
+from typing import Optional
+from accelerate import Accelerator
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,8 @@ class EarlyStopping:
         patience: int = 5,
         min_delta: float = 0.0,
         mode: str = "max",
-        ckpt_path: str = "best.pt"
+        ckpt_path: str = "best.pt",
+        accelerator: Optional[Accelerator] = None
     ):
         """
         Args:
@@ -82,6 +86,7 @@ class EarlyStopping:
         self.min_delta = min_delta
         self.mode = mode
         self.ckpt_path = ckpt_path
+        self.accelerator = accelerator
 
         self.best_score = None
         self.counter = 0
@@ -99,17 +104,18 @@ class EarlyStopping:
 
         if self.best_score is None:
             self.best_score = score
-            self._save_checkpoint(model, optimizer, scheduler, epoch, val_score)
+            self._save_checkpoint(model, optimizer, scheduler, epoch, score)
+            return self.early_stop, self.best_score
         elif score < self.best_score + self.min_delta:
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
+            return self.early_stop, None
         else:
             self.best_score = score
-            self._save_checkpoint(model, optimizer, scheduler, epoch, val_score)
+            self._save_checkpoint(model, optimizer, scheduler, epoch, score)
             self.counter = 0
-
-        return self.early_stop
+            return self.early_stop, self.best_score
 
     def _save_checkpoint(
         self,
@@ -120,17 +126,35 @@ class EarlyStopping:
         best_metric: float
     ):
         """Saves model when metric improves."""
-        torch.save({
-            "epoch": epoch,
-            "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "scheduler_state": scheduler.state_dict() if scheduler else None,
-            "best_metric": best_metric,
-        }, self.ckpt_path)
-        logger.info(f"New best validation metric = {best_metric:.4f} at epoch {epoch+1}, saved best.pt")
+        if self.accelerator is not None and not self.accelerator.is_main_process:
+            return
+        try:
+            # Get the unwrapped model state
+            if self.accelerator is not None:
+                model_state = self.accelerator.get_state_dict(model)
+            else:
+                model_state = model.state_dict()
+            # Save checkpoint directly
+            torch.save({
+                "epoch": epoch,
+                "model_state": model_state,
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict() if scheduler else None,
+                "best_metric": best_metric,
+            }, self.ckpt_path)
+            logger.info(f"New best validation metric = {best_metric:.4f} at epoch {epoch+1}, saved best.pt")
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint: {e}")
+            raise
 
     def load_best_model(self, model: torch.nn.Module):
         """Loads the best saved model weights into `model`."""
-        ckpt = torch.load(self.ckpt_path)
-        model.load_state_dict(ckpt["model_state"])
-        return model
+        try:
+            # Load checkpoint with proper device placement
+            ckpt = torch.load(self.ckpt_path, map_location='cpu')
+            # Load state dict to model
+            model.load_state_dict(ckpt["model_state"])
+            return model
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint: {e}")
+            raise

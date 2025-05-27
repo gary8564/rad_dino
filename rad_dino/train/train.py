@@ -18,10 +18,11 @@ import torch.optim.lr_scheduler as lr_scheduler
 from torch.amp import autocast, GradScaler
 import torchvision.transforms.v2 as transforms
 from transformers import AutoModel
+from sklearn.model_selection import StratifiedKFold
 from transformers import get_cosine_schedule_with_warmup
 import wandb
 from pydantic import BaseModel, Field
-from data.VinDrCXR.data import VinDrCXR_Dataset
+from data import VinDrCXR_Dataset, RSNAPneumonia_Dataset
 from utils.utils import get_transforms, EarlyStopping, collate_fn
 from models.model import DinoClassifier
 from loggings.setup import init_logging
@@ -57,8 +58,28 @@ class TrainConfig(BaseModel):
 
 class DataConfig(BaseModel):
     data_root_folder: str = Field(..., description="Root folder containing the dataset")
-    class_labels: List[str] = Field(..., description="List of class labels")
     num_workers: int = Field(..., description="Number of workers for data loading")
+    
+class MultiLabelDataConfig(DataConfig):
+    class_labels: Optional[List[str]] = Field(default=None, description="Optional list of class labels for multilabel classification. If None, uses all available classes from dataset.")
+
+class MultiClassDataConfig(DataConfig):
+    class_labels: Optional[List[str]] = Field(default=None, description="Optional list of class labels for multiclass classification. If None, uses all available classes from dataset.")
+
+class BinaryDataConfig(DataConfig):
+    pass
+
+class RegressionDataConfig(DataConfig):
+    pass
+
+class OrdinalDataConfig(DataConfig):
+    pass
+
+class SegmentationDataConfig(DataConfig):
+    pass
+
+class TextGenerationDataConfig(DataConfig):
+    pass
 
 @dataclass
 class KFold:
@@ -77,6 +98,7 @@ def get_args_parser(add_help: bool = True):
     parser.add_argument('--task', type=str, default="multilabel", choices=['multilabel', 'multiclass', 'binary', 'regression', 'ordinal', 'segmentation', 'text_generation'])
     parser.add_argument('--data', type=str, default='VinDr-CXR', choices=['VinDr-CXR', 'CANDID-PTX', 'RSNA-Pneumonia', 'VinDr-Mammography'])
     parser.add_argument('--model', type=str, default='rad_dino', choices=['rad_dino', 'dinov2']) 
+    parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
     parser.add_argument(
         "--unfreeze-backbone",
         action="store_true",
@@ -99,97 +121,139 @@ def get_args_parser(add_help: bool = True):
     )
     return parser
     
-def load_data(data_root_folder: str,
-              class_labels: list, 
+def load_data(dataset_name: str, 
+              data_root_folder: str,
               batch_size: int, 
               train_transforms: transforms.Compose, 
               val_transforms: transforms.Compose, 
               num_workers: int, 
+              gradient_accumulation_steps: int,
+              class_labels: Optional[List[str]] = None,
               kfold: int | None = None,
-              random_split_ratio: float = 0.9,
+              train_size: float = 0.75,
               seed: int = 42,):
-    base_ds = VinDrCXR_Dataset(data_root_folder, "train", class_labels=class_labels, transform=None)
-    if kfold and kfold > 1:
-        Y = base_ds.df.to_numpy(dtype=np.int64)
-        mskf = MultilabelStratifiedKFold(
-            n_splits=kfold, shuffle=True, random_state=seed
-        )
-        fold_loaders = []
-        for fold, (train_idx, val_idx) in enumerate(mskf.split(X=base_ds.image_ids, y=Y), start=1):
-            if len(train_idx) == 0 or len(val_idx) == 0:
-                raise ValueError(f"Fold {fold} has empty train or validation set")
-            logger.info(f"[KFold] Fold {fold}: {len(train_idx)} train / {len(val_idx)} val")
-
-            # re‐instantiate your dataset with transforms and subset by indices
-            train_ds = Subset(
-                VinDrCXR_Dataset(data_root_folder, "train", class_labels=class_labels, transform=train_transforms),
-                train_idx
-            )
-            val_ds = Subset(
-                VinDrCXR_Dataset(data_root_folder, "train", class_labels=class_labels, transform=val_transforms),
-                val_idx
-            )
-
-            train_loader = DataLoader(
-                train_ds, 
-                batch_size=batch_size, 
-                shuffle=True, 
-                num_workers=num_workers,
-                pin_memory=True,
-                drop_last=False,
-                collate_fn=collate_fn
-            )
-            val_loader = DataLoader(
-                val_ds, 
-                batch_size=batch_size, 
-                shuffle=False, 
-                num_workers=num_workers,
-                pin_memory=True,
-                drop_last=False,
-                collate_fn=collate_fn
-            )
-
-            fold_loaders.append((train_loader, val_loader))
-
-        return fold_loaders
+    logger.info(f"Loading data for {dataset_name} with kfold={kfold}")
+    # Create dataset factory
+    dataset_factory = {
+        "VinDr-CXR": lambda root, split, labels, transform: VinDrCXR_Dataset(root, split, class_labels=labels, transform=transform),
+        "RSNA-Pneumonia": lambda root, split, labels, transform: RSNAPneumonia_Dataset(root, split, transform=transform),
+        # Add other datasets here
+    }
     
-    n_total_samples = len(base_ds)
-    n_train = int(random_split_ratio * n_total_samples)
-    if n_train == 0 or n_train == n_total_samples:
-        raise ValueError("Train or validation set is empty due to small dataset size")
-    torch.manual_seed(seed)
-    perm = torch.randperm(n_total_samples).tolist()
-    train_idx, val_idx = perm[:n_train], perm[n_train:]
-    train_ds = Subset(
-        VinDrCXR_Dataset(data_root_folder, "train", class_labels=class_labels, transform=train_transforms),
-        train_idx
-    )
-    val_ds = Subset(
-        VinDrCXR_Dataset(data_root_folder, "train", class_labels=class_labels, transform=val_transforms),
-        val_idx
-    )
-    train_loader = DataLoader(
-        train_ds, 
-        batch_size=batch_size, 
-        shuffle=True, 
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
-        collate_fn=collate_fn
-    )
-    val_loader = DataLoader(
-        val_ds, 
-        batch_size=batch_size, 
-        shuffle=False, 
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
-        collate_fn=collate_fn
-    )
-    return train_loader, val_loader
+    if dataset_name not in dataset_factory:
+        raise NotImplementedError(f"Dataset {dataset_name} is not supported")
+    
+    create_dataset = dataset_factory[dataset_name]
+    base_ds = create_dataset(data_root_folder, "train", class_labels, None)
+    
+    # Calculate mini-batch size
+    mini_batch_size = batch_size // gradient_accumulation_steps
+    if batch_size % gradient_accumulation_steps != 0:
+        raise ValueError(f"Batch size ({batch_size}) must be divisible by gradient_accumulation_steps ({gradient_accumulation_steps})")
+    
+    def create_loaders(train_idx, val_idx):
+        train_ds = Subset(
+            create_dataset(data_root_folder, "train", class_labels, train_transforms),
+            train_idx
+        )
+        val_ds = Subset(
+            create_dataset(data_root_folder, "train", class_labels, val_transforms),
+            val_idx
+        )
+        
+        train_loader = DataLoader(
+            train_ds, 
+            batch_size=mini_batch_size, 
+            shuffle=True, 
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=False,
+            collate_fn=collate_fn
+        )
+        val_loader = DataLoader(
+            val_ds, 
+            batch_size=batch_size, 
+            shuffle=False, 
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=False,
+            collate_fn=collate_fn
+        )
+        return train_loader, val_loader
+
+    # Only do k-fold splitting if kfold is explicitly set to a value greater than 1
+    if kfold is not None and kfold > 1:
+        logger.info(f"K-fold splitting with {kfold} folds")
+        # Handle different dataset structures
+        if isinstance(base_ds, RSNAPneumonia_Dataset):
+            # RSNA dataset: binary classification - use StratifiedKFold
+            Y = base_ds.df["Target"].to_numpy(dtype=np.int64)
+            skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
+            return [create_loaders(train_idx, val_idx) for train_idx, val_idx in skf.split(base_ds.image_ids, Y)]
+        elif isinstance(base_ds, VinDrCXR_Dataset):
+            # VinDr dataset: multi-label classification - use MultilabelStratifiedKFold
+            Y = base_ds.df.to_numpy(dtype=np.int64)
+            mskf = MultilabelStratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
+            return [create_loaders(train_idx, val_idx) for train_idx, val_idx in mskf.split(X=base_ds.image_ids, y=Y)]
+        else:
+            raise NotImplementedError(f"K-fold splitting not implemented for dataset type {type(base_ds)}")
+    
+    else:
+        logger.info("Single split case")
+        n_total_samples = len(base_ds)
+        n_train = int(train_size * n_total_samples)
+        if n_train == 0 or n_train == n_total_samples:
+            raise ValueError("Train or validation set is empty due to small dataset size")
+        
+        torch.manual_seed(seed)
+        perm = torch.randperm(n_total_samples).tolist()
+        train_idx, val_idx = perm[:n_train], perm[n_train:]
+        return create_loaders(train_idx, val_idx)
 
 def load_pretrained_model(model_repo):
     return AutoModel.from_pretrained(model_repo)
+
+def get_eval_metrics(task: str, num_classes: int, device: str):
+    """Create appropriate metrics based on task type."""
+    metrics = {}
+    
+    if task == "multiclass":
+        metrics.update({
+            "acc": Accuracy(task="multiclass", num_classes=num_classes),
+            "top5_acc": Accuracy(task="multiclass", num_classes=num_classes, top_k=5),
+            "auroc": AUROC(task="multiclass", num_classes=num_classes, average="macro"),
+            "ap": AveragePrecision(task="multiclass", num_classes=num_classes, average="macro"),
+            "f1_score": F1Score(task="multiclass", num_classes=num_classes)
+        })
+    elif task == "multilabel":
+        metrics.update({
+            "acc": Accuracy(task="multilabel", num_labels=num_classes),
+            "auroc": AUROC(task="multilabel", num_labels=num_classes, average="macro"),
+            "ap": AveragePrecision(task="multilabel", num_labels=num_classes, average="macro"),
+            "f1_score": F1Score(task="multilabel", num_labels=num_classes)
+        })
+    elif task == "binary":
+        metrics.update({
+            "acc": Accuracy(task="binary"),
+            "top5_acc": Accuracy(task="binary", top_k=5),
+            "auroc": AUROC(task="binary"),
+            "ap": AveragePrecision(task="binary"),
+            "f1_score": F1Score(task="binary")
+        })
+    
+    return {k: v.to(device) for k, v in metrics.items() if v is not None}
+
+def get_criterion(task: str):
+    """Get appropriate loss function based on task type."""
+    criterion_map = {
+        "multiclass": torch.nn.CrossEntropyLoss(),
+        "multilabel": torch.nn.BCEWithLogitsLoss(),
+        "binary": torch.nn.BCEWithLogitsLoss(),
+        "regression": torch.nn.MSELoss()
+    }
+    if task not in criterion_map:
+        raise NotImplementedError(f"Task {task} is not supported")
+    return criterion_map[task]
 
 def setup(args, accelerator: Accelerator):
     # Configuration settings
@@ -206,25 +270,34 @@ def setup(args, accelerator: Accelerator):
     if args.data == "VinDr-CXR":
         data_config_raw = data_config_raw["VinDr-CXR"]
     elif args.data == "CANDID-PTX":
-        pass
+        data_config_raw = data_config_raw["CANDID-PTX"]
     elif args.data == "RSNA-Pneumonia":
-        pass
+        data_config_raw = data_config_raw["RSNA-Pneumonia"]
     elif args.data == "VinDr-Mammography":
-        pass
+        data_config_raw = data_config_raw["VinDr-Mammography"]
     else:
         raise NotImplementedError(f"Dataset {args.data} is not supported")
     
     # Validate configurations
     try:
-        data_config = DataConfig(**data_config_raw)
+        if args.task == "multilabel":
+            data_config = MultiLabelDataConfig(**data_config_raw)
+        elif args.task == "multiclass":
+            data_config = MultiClassDataConfig(**data_config_raw)
+        elif args.task == "binary":
+            data_config = BinaryDataConfig(**data_config_raw)
+        else:
+            raise NotImplementedError(f"Task {args.task} is currently not supported.")
         train_config = TrainConfig(**train_config_raw)
     except Exception as e:
         logger.error(f"Configuration validation failed: {str(e)}")
         raise
     
-    class_labels = data_config.class_labels
-    if not class_labels:
-        raise ValueError("Class labels cannot be empty")
+    # Handle class labels based on task type
+    if args.task == "multilabel" or args.task == "multiclass":
+        class_labels = data_config.class_labels
+    else:  # binary, regression, ordinal, segmentation, text_generation
+        class_labels = None  
     
     num_workers = data_config.num_workers
     model_repo = "microsoft/rad-dino" if args.model == "rad_dino" else "facebook/dinov2-base"
@@ -233,109 +306,80 @@ def setup(args, accelerator: Accelerator):
     # Data setup
     batch_size = train_config.batch_size
     data_root_folder = data_config.data_root_folder
-    data_loader = load_data(data_root_folder, class_labels, batch_size, train_transforms, val_transforms, num_workers)
+    data_loader = load_data(args.data, data_root_folder, batch_size, train_transforms, val_transforms, num_workers, accelerator.gradient_accumulation_steps, class_labels, kfold=args.kfold)
+
+    # Get actual number of classes from dataset
+    if isinstance(data_loader, tuple):
+        # Single split case
+        dataset = data_loader[0].dataset
+        if isinstance(dataset, Subset):
+            dataset = dataset.dataset
+    else:
+        # K-fold case
+        dataset = data_loader[0][0].dataset
+        if isinstance(dataset, Subset):
+            dataset = dataset.dataset
+    
+    if args.task == "binary":
+        num_classes = 1  # Binary classification has 1 output
+    elif args.task in ["multilabel", "multiclass"]:
+        if isinstance(dataset, VinDrCXR_Dataset):
+            num_classes = len(dataset.labels)  # Get number of classes from dataset
+        else:
+            raise NotImplementedError(f"Dataset type {type(dataset)} not supported")
+    else:
+        raise NotImplementedError(f"Task {args.task} not supported")
 
     # Model setup
     # device = "cuda" if torch.cuda.is_available() else "cpu"
     backbone = load_pretrained_model(model_repo)
-    model = DinoClassifier(backbone, num_classes=len(class_labels))#.to(device)
+    model = DinoClassifier(backbone, num_classes=num_classes)
 
     # Loss function and evaluation metrics setup
-    if args.task == "multiclass":
-        criterion = torch.nn.CrossEntropyLoss()
-        acc = Accuracy(task="multiclass", num_classes=len(class_labels))#.to(device)
-        top5_acc = Accuracy(task="multiclass", num_classes=len(class_labels), top_k=5)#.to(device)
-        auroc = AUROC(task="multiclass", num_classes=len(class_labels), average="macro", thresholds=None)#.to(device)
-        ap = AveragePrecision(task="multiclass", num_classes=len(class_labels), average="macro", thresholds=None)#.to(device)
-        f1_score = F1Score(task="multiclass", num_classes=len(class_labels))#.to(device)
-    elif args.task == "multilabel":
-        criterion = torch.nn.BCEWithLogitsLoss()
-        acc = Accuracy(task="multilabel", num_labels=len(class_labels))#.to(device)
-        top5_acc = None
-        auroc = AUROC(task="multilabel", num_labels=len(class_labels), average="macro", thresholds=None)#.to(device)
-        ap = AveragePrecision(task="multilabel", num_labels=len(class_labels), average="macro", thresholds=None)#.to(device)
-        f1_score = F1Score(task="multilabel", num_labels=len(class_labels))#.to(device)
-    elif args.task == "binary":
-        criterion = torch.nn.BCEWithLogitsLoss()
-        acc = Accuracy(task="binary")#.to(device)
-        top5_acc = Accuracy(task="binary", top_k=5)#.to(device)
-        auroc = AUROC(task="binary")#.to(device)
-        ap = AveragePrecision(task="binary")#.to(device)
-        f1_score = F1Score(task="binary")#.to(device)
-    elif args.task == "regression":
-        criterion = torch.nn.MSELoss()
-    elif args.task == "ordinal":
-        NotImplementedError
-    elif args.task == "segmentation":
-        NotImplementedError
-    elif args.task == "text_generation":
-        NotImplementedError
-    else:
-        raise ValueError("Unknown task: task must be 'multilabel', 'multiclass', 'binary', 'regression', 'ordinal', 'segmentation', or 'text_generation'.")
-    
-    # Move metrics to the correct device using accelerator
-    metrics = {
-        "acc": acc,
-        "top5_acc": top5_acc,
-        "auroc": auroc,
-        "ap": ap,
-        "f1_score": f1_score
-    }
-    
-    # Move each metric to the correct device
-    for key, metric in metrics.items():
-        if metric is not None:
-            metrics[key] = metric.to(accelerator.device)
-    
-    eval_metrics = {
-        "classification": metrics,
-        "regression": None,
-        "ordinal": None,
-        "text_generation": None
-    }
+    criterion = get_criterion(args.task)
+    eval_metrics = get_eval_metrics(args.task, num_classes, accelerator.device)
                 
     return {
         "data_loader": data_loader, 
         "model": model, 
         "loss_function": criterion, 
-        "eval_metrics": eval_metrics, 
+        "eval_metrics": {"classification": eval_metrics}, 
         "train_config": train_config
     }
 
-def train_per_epoch(curr_epoch, model, data_loader, optimizer, scheduler, criterion, eval_metrics, accelerator, train_config, log_prefix): #, optimize_compute=False):
+def train_per_epoch(curr_epoch, model, data_loader, optimizer, scheduler, criterion, eval_metrics, accelerator, train_config, log_prefix):
     n_steps_per_epoch = math.ceil(len(data_loader.dataset) / train_config.batch_size)
     model.train()
-    # running_loss = 0.0
     running_loss = torch.tensor(0.0, device=accelerator.device)
     
     for i, data in enumerate(tqdm(data_loader, desc=f"Epoch {curr_epoch + 1}")):
-        images, labels, _ = data 
-        # images, labels = images.to(device), labels.to(device)
-        optimizer.zero_grad()
-        with accelerator.autocast():
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-        # if optimize_compute:
-            # scaler.scale(loss).backward()
-            # scaler.step(optimizer)
-            # scaler.update()
-        # else:
-            # loss.backward()
-            # optimizer.step()
-        accelerator.backward(loss)
-        optimizer.step()
-        if scheduler:
-            scheduler.step()
+        # Backpropagate the loss and accumulate gradients
+        with accelerator.accumulate(model):
+            images, labels, _ = data
+            
+            # Forward pass with mixed precision
+            with accelerator.autocast():
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+            
+            # Backward pass and gradient clipping
+            accelerator.backward(loss)
+            if accelerator.sync_gradients:  # Only clip when gradients are synced
+                accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0)              
+            optimizer.step()
+            if scheduler:
+                scheduler.step()
+            optimizer.zero_grad()
         
         # Accumulate loss
         running_loss += loss.item()
         
-        # Calculate accuracy and AUC-ROC for logging
-        acc_metric = eval_metrics["classification"]["acc"]
-        acc = acc_metric(outputs, labels)
-
-        auroc_metric = eval_metrics["classification"]["auroc"]
-        auroc = acc_metric(outputs, labels)
+        # Calculate metrics
+        with torch.no_grad():
+            acc_metric = eval_metrics["classification"]["acc"]
+            acc = acc_metric(outputs, labels)
+            auroc_metric = eval_metrics["classification"]["auroc"]
+            auroc = auroc_metric(outputs, labels)
         
         if i % 10 == 0 and accelerator.is_main_process:
             current_lr = scheduler.get_last_lr()[0] if scheduler else train_config.optim.base_lr
@@ -433,22 +477,44 @@ def initialize_fold(
     # Create fresh model copy
     model = copy.deepcopy(base_model)#.to(device)
     
+    # Separate parameters for backbone and head
+    backbone_params = []
+    head_params = []
+    
     # Apply backbone unfreezing if specified
     if args.unfreeze_backbone:
-        for name, param in model.backbone.named_parameters():
-            param.requires_grad = 'blocks.10' in name or 'blocks.11' in name
+        for name, param in model.named_parameters():
+            if 'backbone' in name:
+                if 'layer.10' in name or 'layer.11' in name:
+                    logger.info(f"Unfreezing backbone parameter: {name}")
+                    param.requires_grad = True
+                    backbone_params.append(param)
+                else:
+                    param.requires_grad = False
+            else:
+                head_params.append(param)
+    else:
+        # If not unfreezing, only collect head parameters
+        for name, param in model.named_parameters():
+            if 'backbone' not in name:
+                head_params.append(param)
     
-    # Initialize optimizer
+    # Create parameter groups with different learning rates
+    param_groups = [
+        {'params': head_params, 'lr': train_config.optim.base_lr},
+        {'params': backbone_params, 'lr': train_config.optim.base_lr * 0.1}  # 10x smaller learning rate for backbone
+    ]
+    
+    # Initialize optimizer with parameter groups
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=train_config.optim.base_lr,
+        param_groups,
         weight_decay=train_config.optim.weight_decay
     )
     
     # Initialize scheduler if configured
     lr_scheduler = None
     if train_config.lr_scheduler:
-        num_training_steps = len(train_loader) * train_config.epochs
+        num_training_steps = (len(train_loader) // accelerator.gradient_accumulation_steps) * train_config.epochs
         num_warmup_steps = int(train_config.lr_scheduler.warmup_ratio * num_training_steps)
         lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer, num_warmup_steps, num_training_steps
@@ -510,14 +576,9 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
     train_config = cfg["train_config"]
     
     # device = "cuda" if torch.cuda.is_available() else "cpu"
-    optimize_compute = args.optimize_compute    
+    # optimize_compute = args.optimize_compute    
     num_epochs = train_config.epochs
     batch_size = train_config.batch_size
-    
-    # Create checkpoint dir only on main process
-    if accelerator.is_main_process:
-        os.makedirs(checkpoint_dir, exist_ok=True)
-    accelerator.wait_for_everyone()
     
     # Prepare fold loaders (single-split as a single "fold")
     is_kfold = isinstance(data_loader, list)
@@ -531,7 +592,12 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
 
     # Initialize wandb
     if accelerator.is_main_process:
-        wandb.init(project="dinov2-linear-probe", name=f"{args.model}_{CURR_TIME}_{args.data}", config={"epochs": num_epochs, "batch_size": batch_size})
+        wandb_name = f"{CURR_TIME}_{args.data}_{args.model}"
+        if args.unfreeze_backbone:
+            wandb_name += "_unfreeze_backbone"
+        if is_kfold:
+            wandb_name += f"_kfold"
+        wandb.init(project="dinov2-linear-probe", name=wandb_name, config={"epochs": num_epochs, "batch_size": batch_size})
     
     # Track best model and fold results
     best_metric_global = -float("inf")  
@@ -540,10 +606,15 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
 
     # Iterate over folds
     for fold_idx, (train_loader, val_loader) in enumerate(fold_loaders, start=0):
-        fold_idx = fold_idx + 1 if is_kfold else 0  # Use 0 for single-split
-        log_prefix = f"Fold {fold_idx} " if is_kfold else ""
+        if is_kfold:
+            fold_idx = fold_idx + 1  
+            log_prefix = f"fold{fold_idx}/"
+        else:
+            fold_idx = 0  
+            log_prefix = ""  
+            
         if accelerator.is_main_process:
-            logger.info(f"{log_prefix} Training size: {len(train_loader)}  Validation size: {len(val_loader)}")
+            logger.info(f"{log_prefix} Training size: {len(train_loader)} Validation size: {len(val_loader)}")
         
         # Initialize KFold 
         kfold = initialize_fold(
@@ -564,7 +635,8 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
                 patience=patience,
                 min_delta=early_stopper_config.min_delta,
                 mode=early_stopper_config.mode,
-                ckpt_path=kfold.best_checkpoint
+                ckpt_path=kfold.best_checkpoint,
+                accelerator=accelerator
             )
         
         # Training loop
@@ -574,36 +646,49 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
                 kfold.lr_scheduler, criterion, eval_metrics, accelerator, train_config, log_prefix #, optimize_compute
             )
             if accelerator.is_main_process:
-                print(f'{log_prefix}Epoch {epoch+1} \t\t Train loss: {train_loss:.3f} \t\t Top1 Acc: {train_acc:.3f}')
+                print(f'{log_prefix} Epoch {epoch+1} \t\t Train loss: {train_loss:.3f} \t\t Top1 Acc: {train_acc:.3f}')
             
             val_loss, val_acc, val_f1, val_ap, val_auroc = eval_per_epoch(
                 kfold.model, kfold.val_loader, criterion, eval_metrics, accelerator, log_prefix
             )
             if accelerator.is_main_process:
-                print(f'{log_prefix}Epoch {epoch+1} \t\t Val loss {val_loss:.3f} \t\t AUPRC {val_ap:.3f}')
+                print(f'{log_prefix} Epoch {epoch+1} \t\t Val loss {val_loss:.3f} \t\t AUPRC {val_ap:.3f}')
             
             # Log metrics
             if accelerator.is_main_process:
                 wandb.log({
-                    f"train/{log_prefix}loss_per_epoch": train_loss,
-                    f"train/{log_prefix}ACC": train_acc,
-                    f"train/{log_prefix}AUROC": train_auroc,
-                    f"val/{log_prefix}loss_per_epoch": val_loss,
-                    f"val/{log_prefix}ACC": val_acc,
-                    f"val/{log_prefix}F1_Score": val_f1,
-                    f"val/{log_prefix}AUPRC": val_ap,
-                    f"val/{log_prefix}AUROC": val_auroc,  
+                    f"{log_prefix}train/loss_per_epoch": train_loss,
+                    f"{log_prefix}train/ACC": train_acc,
+                    f"{log_prefix}train/AUROC": train_auroc,
+                    f"{log_prefix}val/loss_per_epoch": val_loss,
+                    f"{log_prefix}val/ACC": val_acc,
+                    f"{log_prefix}val/F1_Score": val_f1,
+                    f"{log_prefix}val/AUPRC": val_ap,
+                    f"{log_prefix}val/AUROC": val_auroc,  
                 })
             
             # Early stopping
             if early_stopper and accelerator.is_main_process:
-                if early_stopper.step(val_ap, kfold.model, kfold.optimizer, kfold.lr_scheduler, epoch + 1):
+                early_stop, new_best_metric = early_stopper.step(val_ap, kfold.model, kfold.optimizer, kfold.lr_scheduler, epoch + 1)
+                if new_best_metric is not None:
+                    kfold.best_metric = new_best_metric
+                if early_stop:
                     logger.info(f"{log_prefix}Stopping early at epoch {epoch + 1}")
                     break
+            else:
+                # If not using early stopping, update best metric directly
+                if val_ap > kfold.best_metric:
+                    kfold.best_metric = val_ap
+                    if accelerator.is_main_process:
+                        logger.info(f"{log_prefix}New best model for this fold with AUPRC={val_ap:.4f}")
         
         # Load best model for this fold
         if early_stopper and accelerator.is_main_process:
-            best_model = early_stopper.load_best_model(kfold.model)
+            try:
+                best_model = early_stopper.load_best_model(kfold.model)
+            except (RuntimeError, FileNotFoundError) as e:
+                logger.warning(f"Failed to load best model checkpoint: {e}. Using current model instead.")
+                best_model = kfold.model
         else:
             best_model = kfold.model
         
@@ -631,17 +716,34 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
     
     # Ensure we have a best model
     if best_model_global is None and accelerator.is_main_process:
-        logger.warning("No best model was found during training. Using the last model.")
-        best_model_global = best_model
+        if is_kfold:
+            logger.warning("No best model was found during cross-validation. Using the last-fold model.")
+            best_model_global = best_model
+        else:
+            logger.warning("Single-split training: No other fold to compare with. Using the last-fold model.")
+            best_model_global = best_model
+    
     # return best_model_global
     return accelerator.unwrap_model(best_model_global) if best_model_global is not None else accelerator.unwrap_model(best_model)
 
 def main(args):
-    accelerator = Accelerator(mixed_precision="fp16" if args.optimize_compute else "no")
+    if args.kfold is not None and args.kfold < 1:
+        raise ValueError("kfold must be greater than 0")
+    
+    accelerator = Accelerator(mixed_precision="fp16" if args.optimize_compute else "no",
+                              gradient_accumulation_steps=2)
+    
+    # Create both output and checkpoint directories
+    checkpoint_folder_name = f"checkpoints_{CURR_TIME}_{args.data}_{args.model}"
+    if args.unfreeze_backbone:
+        checkpoint_folder_name += "_unfreeze_backbone"
+    output_dir = os.path.join(CURR_DIR, args.output_dir)
+    checkpoint_dir = os.path.join(output_dir, checkpoint_folder_name)
+    
     if accelerator.is_main_process:
-        os.makedirs(os.path.join(CURR_DIR, args.output_dir), exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
     accelerator.wait_for_everyone()
-    checkpoint_dir = os.path.join(CURR_DIR, args.output_dir, f"checkpoints_{args.model}_{CURR_TIME}")
     
     # Run the training loop (with resume logic baked in) and return the best model
     best_model = train_model(args, checkpoint_dir, accelerator)
@@ -651,20 +753,35 @@ def main(args):
     input_size = MODEL_INPUT_SIZES.get(args.model, (224, 224))  # Default to 224x224
     dummy = torch.randn(1, 3, *input_size, device=device)
     
-    # Save the model (TorchScript)
+    # Export to ONNX
     if accelerator.is_main_process:
         try:
-            best_model_scripted = torch.jit.script(best_model)
+            # Set the model to evaluation mode
+            best_model.eval()
+            
+            # Export the model
+            onnx_path = os.path.join(checkpoint_dir, "best.onnx")
+            torch.onnx.export(
+                best_model,                     # model being run
+                dummy,                          # model input (or a tuple for multiple inputs)
+                onnx_path,                      # where to save the model
+                export_params=True,             # store the trained parameter weights inside the model file
+                opset_version=12,               # the ONNX version to export the model to
+                do_constant_folding=True,       # whether to execute constant folding for optimization
+                input_names=['input'],          # the model's input names
+                output_names=['output'],        # the model's output names
+                dynamic_axes={                  # variable length axes
+                    'input': {0: 'batch_size'},
+                    'output': {0: 'batch_size'}
+                },
+                verbose=False
+            )
+            logger.info(f"Successfully exported ONNX model to {onnx_path}")
+            
         except Exception as e:
-            logger.warning(f"Scripting failed: {e}. Falling back to tracing with input size {input_size}.")
-            with torch.no_grad():
-                best_model_scripted = torch.jit.trace(best_model, (dummy,), strict=False)
+            logger.error(f"Failed to export ONNX model: {e}")
+            logger.info("The best model state dict is still available in the checkpoint directory as 'best.pt'")
 
-    # Save the scripted model
-    out_path = os.path.join(checkpoint_dir, f"best_final_scripted.pt")
-    best_model_scripted.save(out_path)
-    logger.info(f"Saved final scripted model to {out_path}")
-    
 if __name__ == "__main__":
     args = get_args_parser(add_help=True).parse_args()
     main(args)
