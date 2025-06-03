@@ -3,61 +3,6 @@ import pydicom
 from pydicom.pixels import apply_voi_lut
 import matplotlib.pyplot as plt
 import cv2
-import glob
-import os
-import pandas as pd
-import logging
-from typing import Union
-from loggings.setup import init_logging
-init_logging()
-logger = logging.getLogger(__name__)
-
-def filter_subset_annot_labels(train_annot_path: str, test_annot_path: str, labels: Union[int, list[str]]):
-    """A subset of class labels is selected, given the long-tailed distribution in the original dataset.
-    
-    Args:
-        train_annot_path: Path to annotation csv file of training dataset
-        test_annot_path: Path to annotation csv file of test dataset
-        labels: the class labels to be filtered
-    Returns:
-        A list of the class labels considered for image classification task
-    
-    """
-    df_train = pd.read_csv(train_annot_path)
-    df_test  = pd.read_csv(test_annot_path)
-    annot_dir = os.path.dirname(train_annot_path)
-    df_train_annot = pd.read_csv(os.path.join(annot_dir, "annotations_train.csv"))
-    df_test_annot = pd.read_csv(os.path.join(annot_dir, "annotations_test.csv"))
-    if isinstance(labels, int):
-        # find top-k classes in the training dataset
-        class_labels = (
-            df_train_annot['class_name']
-            .value_counts()
-            .head(8)
-            .index
-            .tolist()
-        )
-    else:
-        class_labels = list(labels)
-    # filter both train & test to only those classes
-    df_train_filtered = df_train[ ["image_id"] + class_labels ]
-    df_test_filtered = df_test[ ["image_id"] + class_labels ]
-    df_train_annot_filtered = df_train_annot[df_train_annot['class_name'].isin(class_labels)].copy()
-    df_test_annot_filtered  = df_test_annot[df_test_annot['class_name'].isin(class_labels)].copy()
-    df_train_annot_filtered.reset_index(drop=True, inplace=True)
-    df_test_annot_filtered.reset_index(drop=True,  inplace=True)
-    
-    # output the filtered annotated csv 
-    train_out = os.path.join(annot_dir, "filtered_image_labels_train.csv")
-    test_out  = os.path.join(annot_dir, "filtered_image_labels_test.csv")
-    train_annot_out = os.path.join(annot_dir, "filtered_annotations_train.csv")
-    test_annot_out  = os.path.join(annot_dir, "filtered_annotations_test.csv")
-    df_train_filtered.to_csv(train_out, index=False)
-    df_test_filtered.to_csv(test_out,  index=False)
-    df_train_annot_filtered.to_csv(train_annot_out, index=False)
-    df_test_annot_filtered.to_csv(test_annot_out,  index=False)
-    logger.debug(f"Filtered csv are saved!")
-    return class_labels
 
 def dicom2array(path, voi_lut = True, fix_monochrome = True):
     """
@@ -107,7 +52,18 @@ def dicom2array(path, voi_lut = True, fix_monochrome = True):
     except Exception as e:
         raise ValueError(f"Error processing DICOM file: {str(e)}")
 
-def plot_image(img, title="", figsize=(8,8), cmap=None):
+def plot_image(img, title="", figsize=(8,8), cmap=None, visualize=True, output_path=None):
+    """
+    Plot radiology image.
+
+    Args:
+        img: image array
+        title: title of the image
+        figsize: figure size
+        cmap: colormap
+        visualize: whether to visualize the image
+        output_path: path to save the image
+    """
     plt.figure(figsize=figsize)
     if cmap:
         plt.imshow(img, cmap=cmap)
@@ -115,7 +71,11 @@ def plot_image(img, title="", figsize=(8,8), cmap=None):
         plt.imshow(img)
     plt.title(title, fontweight="bold")
     plt.axis(False)
-    plt.show()  
+    if visualize:
+        plt.show()
+    if output_path is not None:
+        plt.savefig(output_path)
+    plt.close()
     
 def get_image_id(path):
     """ Function to return the image-id from a path """

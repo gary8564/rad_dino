@@ -10,6 +10,7 @@ dependencies:
   - opencv=4.11.0
   - pandas
   - scikit-learn
+  - scikit-image
   - scipy=1.15.2
   - seaborn
   - supervision

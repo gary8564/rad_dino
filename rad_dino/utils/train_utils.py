@@ -1,65 +1,43 @@
-import torchvision.transforms.v2 as transforms
 import torch
-from transformers import AutoImageProcessor
 import logging
-from loggings.setup import init_logging
+from rad_dino.loggings.setup import init_logging
 import os
-from typing import Optional
+from typing import Optional, Union
 from accelerate import Accelerator
+from transformers import AutoModel
+
 init_logging()
 logger = logging.getLogger(__name__)
+CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Cope with variable-length custom dataset
-def collate_fn(batch):
-    imgs, targets, image_ids = zip(*batch)
-    pixel_values = torch.stack(imgs, dim=0)    # [B, C, H, W]
-    target = torch.stack(targets, dim=0)       # [B, num_classes]
-    return pixel_values, target, image_ids
+# Load pretrained model
+def load_pretrained_model(model_repo):
+    return AutoModel.from_pretrained(model_repo)
 
-# Data augmentation: image transformation
-def get_transforms(pretrained_model_path):
+# Get loss function
+def get_criterion(task: str, weights: Union[torch.Tensor, None] = None, device: Union[str, torch.device] = "cpu"):
     """
-    Define the transforms for data augmentation. 
-    Get the transformers from pretrained model to ensure custom data is 
-    transformed/formatted in the same way the data the original model was 
-    trained on.
-    """
-    image_processor  = AutoImageProcessor.from_pretrained(pretrained_model_path)
-    mean = image_processor.image_mean
-    std = image_processor.image_std
-    interpolation = image_processor.resample
-    crop_size = (image_processor.crop_size["height"], image_processor.crop_size["width"])
-    size = image_processor.size["shortest_edge"]
-    normalize = transforms.Normalize(mean=mean, std=std)
+    Get appropriate loss function based on task type with optional weighting.
     
-    # First resize all images to a consistent size before any other transforms
-    train_transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize(size),  
-        transforms.RandomResizedCrop(crop_size, scale=(0.08, 1.0), ratio=(0.75, 1.3333), interpolation=interpolation),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomAffine(
-            degrees=10,                            # small rotation
-            translate=(0.1,0.1),                   # 10% translations
-            scale=(0.9,1.1),                       # ±10% zoom
-            shear=10                               # ±10° shear
-        ),
-        transforms.RandomApply([
-            transforms.ColorJitter(brightness=(0.6, 1.4), contrast=(0.6, 1.4), saturation=(0.6, 1.4))
-        ], p=0.3),
-        transforms.GaussianBlur(kernel_size=5, sigma=(0.1,2.0)),
-        transforms.ToTensor(),
-        normalize,
-    ])
-
-    val_transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize(size),  
-        transforms.CenterCrop(crop_size),
-        transforms.ToTensor(),
-        normalize,
-    ])
-    return train_transform, val_transform
+    Args:
+        task: Task type
+        weights: Weights for multiclass CrossEntropyLoss or pos_weights for binary/multilabel BCEWithLogitsLoss
+        device: Device to move weights to (e.g., "cuda:0", "cpu")
+        
+    Returns:
+        torch.nn loss function
+    """
+    if weights is not None:
+        weights = weights.to(device)
+    criterion_map = {
+        "multiclass": torch.nn.CrossEntropyLoss(weight=weights),
+        "multilabel": torch.nn.BCEWithLogitsLoss(pos_weight=weights),
+        "binary": torch.nn.BCEWithLogitsLoss(pos_weight=weights),
+        "regression": torch.nn.MSELoss()
+    }
+    if task not in criterion_map:
+        raise NotImplementedError(f"Task {task} is not supported")
+    return criterion_map[task]
 
 # Early Stopping
 class EarlyStopping:

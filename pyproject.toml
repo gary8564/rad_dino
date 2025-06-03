@@ -26,11 +26,14 @@ dependencies = [
     "kaggle==1.7.4",
     "datasets==3.3.2",
     "iterative-stratification==0.1.9",
-    "pyyaml==6.0.2"
-    "accelerate"
-    "grad-cam"
+    "pyyaml==6.0.2",
+    "accelerate",
+    "grad-cam",
+    "onnx",
+    "onnxruntime-gpu"
 ]
 
 [tool.setuptools.packages.find]
-where = ["rad_dino"]
+where = ["."]
+include = ["rad_dino*"]
 

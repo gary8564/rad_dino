@@ -1,16 +1,15 @@
 VinDr-CXR:
-  data_root_folder: "/hpcwork/rwth1833/datasets/VinDr-CXR/download/physionet.org/files/vindr-cxr/1.0.0"
+  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR"
   num_workers: 8
-  class_labels: ["Lung Opacity", "Cardiomegaly", "Pleural thickening", "Aortic enlargement", "Pleural effusion", "Pulmonary fibrosis", "Tuberculosis", "No finding"]
 
 CANDID-PTX:
-  data_root_folder: "/hpcwork/rwth1833/datasets/CANDID-PTX"
+  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/CANDID-PTX"
   num_workers: 8
 
 RSNA-Pneumonia:
-  data_root_folder: "/hpcwork/rwth1833/datasets/RSNA-Pneumonia"
+  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/RSNA-Pneumonia"
   num_workers: 8
 
-VinDr-Mammography:
-  data_root_folder: "/hpcwork/rwth1833/datasets/VinDr-Mammography"
+VinDr-Mammo:
+  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo"
   num_workers: 8

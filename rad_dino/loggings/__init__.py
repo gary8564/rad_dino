@@ -1,2 +1,2 @@
-from loggings.formatters import ColoredFormatter
-from loggings.setup import init_logging
+from .formatters import ColoredFormatter
+from .setup import init_logging

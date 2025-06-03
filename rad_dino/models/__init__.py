@@ -1,1 +1,1 @@
-from models.model import DinoClassifier
+from .model import DinoClassifier

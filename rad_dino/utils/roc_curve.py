@@ -1,5 +1,7 @@
 import numpy as np 
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_curve, auc, confusion_matrix
+import matplotlib
+import matplotlib.pyplot as plt
 
 def compute_stats(stats, ci=95):
     mean = np.mean(stats)
@@ -61,3 +63,59 @@ def cm2x(cm):
     tnr = safe_div(tn,n)   # true negative rate (specificity)
     # Note: other values are 1-x eg. fdr=1-ppv, for=1-npv, ....
     return ppv, npv, tpr, tnr
+
+def plot_roc_curve(y_true, y_score, axis, bootstrapping=1000, drop_intermediate=False, fontdict={}, name='ROC', color='b', show_wp=True):
+    # ----------- Bootstrapping ------------
+    tprs, aucs, thrs, mean_fpr = auc_bootstrapping(y_true, y_score, bootstrapping, drop_intermediate)
+
+    mean_tpr = np.nanmean(tprs, axis=0)
+    mean_tpr[-1] = 1.0        
+    std_tpr = np.nanstd(tprs, axis=0, ddof=1)
+    tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
+    tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
+
+    # ------ Averaged based on bootspraping ------
+    mean_auc = np.nanmean(aucs)
+    std_auc = np.nanstd(aucs, ddof=1)
+  
+
+    # --------- Specific Case -------------
+    fprs, tprs, thrs = roc_curve(y_true, y_score, drop_intermediate=drop_intermediate)
+    auc_val = auc(fprs, tprs)
+    opt_idx = np.argmax(tprs - fprs)
+    opt_tpr = tprs[opt_idx]
+    opt_fpr = fprs[opt_idx]
+
+  
+    y_scores_bin = y_score>=thrs[opt_idx] # WANRING: Must be >= not > 
+    conf_matrix = confusion_matrix(y_true, y_scores_bin) # [[TN, FP], [FN, TP]]
+    
+
+
+    axis.plot(fprs, tprs, color=color, label=rf"{name} (AUC = {auc_val:.2f} $\pm$ {std_auc:.2f})",
+                lw=2, alpha=.8)
+    axis.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2, label=r'$\pm$ 1 std. dev.')
+    if show_wp:
+        axis.hlines(y=opt_tpr, xmin=0.0, xmax=opt_fpr, color='g', linestyle='--')
+        axis.vlines(x=opt_fpr, ymin=0.0, ymax=opt_tpr, color='g', linestyle='--')
+    axis.plot(opt_fpr, opt_tpr, color=color, marker='o') 
+    axis.plot([0, 1], [0, 1], linestyle='--', color='k')
+    axis.set_xlim([0.0, 1.0])
+    axis.set_ylim([0.0, 1.0])
+    
+    axis.legend(loc='lower right')
+    axis.set_xlabel('1 - Specificity', fontdict=fontdict)
+    axis.set_ylabel('Sensitivity', fontdict=fontdict)
+    
+    axis.grid(color='#dddddd')
+    axis.set_axisbelow(True)
+    axis.tick_params(colors='#dddddd', which='both')
+    for xtick in axis.get_xticklabels():
+        xtick.set_color('k')
+    for ytick in axis.get_yticklabels():
+        ytick.set_color('k')
+    for child in axis.get_children():
+        if isinstance(child, matplotlib.spines.Spine):
+            child.set_color('#dddddd')
+ 
+    return tprs, fprs, auc_val, thrs, opt_idx, conf_matrix
