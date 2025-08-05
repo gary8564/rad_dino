@@ -7,9 +7,9 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=4G 
-#SBATCH --time=24:00:00                 
-#SBATCH --job-name=dinov2-small_rsna_inference_unfreeze_backbone
-#SBATCH --output=stdout_dinov2-small_rsna_inference_unfreeze_backbone.txt    
+#SBATCH --time=1:00:00                 
+#SBATCH --job-name=dinov2-small_vindr_mammo_inference_single_view
+#SBATCH --output=stdout_dinov2-small_vindr_mammo_inference_single_view.txt    
 #SBATCH --account=rwth1833              
 
 
@@ -20,22 +20,23 @@ module load GCC/12.2.0
 conda activate rad-dino
 
 ### Configuration
-TASK="binary"
-DATA="RSNA-Pneumonia"
+TASK="multiclass"
+DATA="VinDr-Mammo"
 MODEL="dinov2-small"
-MODEL_PATH="runs/checkpoints_2025_06_02_232714_RSNA-Pneumonia_dinov2-small_unfreeze_backbone"
-OUTPUT_PATH="/hpcwork/rwth1833/experiments"
-BATCH_SIZE=32
+MODEL_PATH="runs/checkpoints_2025_07_10_220545_VinDr-Mammo_dinov2-small_single_view_birads"
+OUTPUT_PATH="/hpcwork/rwth1833/experiments/"
+BATCH_SIZE=4 #32
 ATTENTION_THRESHOLD=0.6
-SAVE_HEADS='5'
-EXTRA_ARGS="--optimize-compute --show-gradcam" #--show-attention --attention-threshold $ATTENTION_THRESHOLD --save-heads $SAVE_HEADS"  # Add any extra args here
+SAVE_HEADS="mean"
+EXTRA_ARGS="--optimize-compute" # --show-attention --attention-threshold $ATTENTION_THRESHOLD --save-heads $SAVE_HEADS --compute-rollout"   # Add any extra args here
 
 # Run your program
-python rad_dino/eval/inference.py \
+python rad_dino/run/inference.py \
     --task $TASK \
     --data $DATA \
     --model $MODEL \
     --model-path $MODEL_PATH \
     --output-path $OUTPUT_PATH \
     --batch-size $BATCH_SIZE \
+    --fusion-type "mean" \
     $EXTRA_ARGS

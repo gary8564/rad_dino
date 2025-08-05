@@ -11,5 +11,11 @@ RSNA-Pneumonia:
   num_workers: 8
 
 VinDr-Mammo:
-  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo"
+  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/single_view"
   num_workers: 8
+  multi_view:
+    num_views: 4
+    view_fusion_type: "mean"
+    adapter_dim: null
+    view_fusion_hidden_dim: null
+    data_root_folder_multi_view: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view"

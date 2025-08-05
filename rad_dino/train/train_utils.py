@@ -4,15 +4,10 @@ from rad_dino.loggings.setup import init_logging
 import os
 from typing import Optional, Union
 from accelerate import Accelerator
-from transformers import AutoModel
-
+from torchmetrics import Accuracy, AUROC, AveragePrecision, F1Score
 init_logging()
 logger = logging.getLogger(__name__)
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Load pretrained model
-def load_pretrained_model(model_repo):
-    return AutoModel.from_pretrained(model_repo)
 
 # Get loss function
 def get_criterion(task: str, weights: Union[torch.Tensor, None] = None, device: Union[str, torch.device] = "cpu"):
@@ -38,6 +33,37 @@ def get_criterion(task: str, weights: Union[torch.Tensor, None] = None, device: 
     if task not in criterion_map:
         raise NotImplementedError(f"Task {task} is not supported")
     return criterion_map[task]
+
+# Get evaluation metrics
+def get_eval_metrics(task: str, num_classes: int, device: str):
+    """Create appropriate metrics based on task type."""
+    metrics = {}
+    
+    if task == "multiclass":
+        metrics.update({
+            "acc": Accuracy(task="multiclass", num_classes=num_classes),
+            "top5_acc": Accuracy(task="multiclass", num_classes=num_classes, top_k=5),
+            "auroc": AUROC(task="multiclass", num_classes=num_classes, average="macro"),
+            "ap": AveragePrecision(task="multiclass", num_classes=num_classes, average="macro"),
+            "f1_score": F1Score(task="multiclass", num_classes=num_classes)
+        })
+    elif task == "multilabel":
+        metrics.update({
+            "acc": Accuracy(task="multilabel", num_labels=num_classes),
+            "auroc": AUROC(task="multilabel", num_labels=num_classes, average="macro"),
+            "ap": AveragePrecision(task="multilabel", num_labels=num_classes, average="macro"),
+            "f1_score": F1Score(task="multilabel", num_labels=num_classes)
+        })
+    elif task == "binary":
+        metrics.update({
+            "acc": Accuracy(task="binary"),
+            "top5_acc": Accuracy(task="binary", top_k=5),
+            "auroc": AUROC(task="binary"),
+            "ap": AveragePrecision(task="binary"),
+            "f1_score": F1Score(task="binary")
+        })
+    
+    return {k: v.to(device) for k, v in metrics.items() if v is not None}
 
 # Early Stopping
 class EarlyStopping:
@@ -113,13 +139,24 @@ class EarlyStopping:
             else:
                 model_state = model.state_dict()
             # Save checkpoint directly
-            torch.save({
+            checkpoint_data = {
                 "epoch": epoch,
                 "model_state": model_state,
                 "optimizer_state": optimizer.state_dict(),
                 "scheduler_state": scheduler.state_dict() if scheduler else None,
                 "best_metric": best_metric,
-            }, self.ckpt_path)
+            }
+            
+            # Add multi-view configuration if applicable
+            if hasattr(model, 'multi_view') and model.multi_view:
+                checkpoint_data.update({
+                    "num_views": model.num_views,
+                    "view_fusion_type": model.view_fusion_type,
+                    "adapter_dim": getattr(model, 'adapter_dim', None),
+                    "view_fusion_hidden_dim": getattr(model, 'view_fusion_hidden_dim', None),
+                })
+            
+            torch.save(checkpoint_data, self.ckpt_path)
             logger.info(f"New best validation metric = {best_metric:.4f} at epoch {epoch+1}, saved best.pt")
         except Exception as e:
             logger.error(f"Failed to save checkpoint: {e}")

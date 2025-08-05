@@ -14,9 +14,11 @@ import wandb
 
 from rad_dino.utils.config_utils import setup_configs
 from rad_dino.utils.data_utils import get_transforms, load_data, get_class_weights
-from rad_dino.utils.train_utils import load_pretrained_model, get_criterion
-from rad_dino.utils.eval_utils import get_eval_metrics
-from rad_dino.models.model import DinoClassifier
+from rad_dino.train.train_utils import get_criterion, get_eval_metrics
+from rad_dino.utils.model_loader import load_pretrained_model
+from rad_dino.models.dino import DinoClassifier
+from rad_dino.models.siglip import MedSigClassifier
+from rad_dino.models.ark import ArkClassifier, load_prtrained_ark_model
 from rad_dino.loggings.setup import init_logging
 from rad_dino.train.trainer import Trainer
 
@@ -28,15 +30,21 @@ CURR_TIME = datetime.now().strftime("%Y_%m_%d_%H%M%S")
 
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv2 linear probling", add_help=add_help)
-    parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary', 'regression', 'ordinal', 'segmentation', 'text_generation'])
+    parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary'])
     parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'CANDID-PTX', 'RSNA-Pneumonia', 'VinDr-Mammo'])
-    parser.add_argument('--model', type=str, required=True, choices=['rad_dino', 'dinov2-small', 'dinov2-base']) 
+    parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'medsiglip', 'ark']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
+    parser.add_argument('--multi-view', action='store_true', help="Enable multi-view processing for mammography data")
     parser.add_argument(
         "--unfreeze-backbone",
         action="store_true",
         help="Whether to unfreeze the ViT backbone.")
     parser.add_argument('--unfreeze-num-layers', type=int, default=None, help="Number of transformer blocks to unfreeze from the end of the ViT backbone.")
+    parser.add_argument(
+        "--progressive-unfreeze",
+        action="store_true",
+        help="Whether to use progressive unfreezing of the ViT backbone layers. Unfreezes (epoch//2) layers at even epochs (2, 4, 6, ...).",
+    )
     parser.add_argument(
         "--optimize-compute",
         action="store_true",
@@ -56,6 +64,9 @@ def get_args_parser(add_help: bool = True):
         "--resume-checkpoint-path", type=str, default=None, help="Path to the checkpoint to continue training from.",
     )
     parser.add_argument(
+        "--pretrained-ark-path", type=str, default=None, help="Path to the Ark pre-trained checkpoint file.",
+    )
+    parser.add_argument(
         "--output-dir",
         default="../../runs/",
         type=str,
@@ -64,23 +75,34 @@ def get_args_parser(add_help: bool = True):
     return parser
 
 def setup(args, accelerator: Accelerator):
+    # Setup configs
     data_config, train_config = setup_configs(args.data, args.task) 
     num_workers = data_config.num_workers
-    if args.model == "rad_dino":
+    
+    # Get multi-view configuration
+    multi_view_config = data_config.get_multi_view_config(args.multi_view)
+    
+    # Get model repo to extract information for data augmentation
+    if args.model == "rad-dino":
         model_repo = "microsoft/rad-dino"
     elif args.model == "dinov2-small":
         model_repo = "facebook/dinov2-small"
     elif args.model == "dinov2-base":
         model_repo = "facebook/dinov2-base"
+    elif args.model == "medsiglip":
+        model_repo = "google/medsiglip-448"
+    elif args.model == "ark":
+        model_repo = "ark-swin-large-768"  # Custom identifier for Ark models
     else:
         raise ValueError(f"Model {args.model} not supported.")
     train_transforms, val_transforms = get_transforms(model_repo)
    
     # Data setup
     batch_size = train_config.batch_size
-    data_root_folder = data_config.data_root_folder
-    logger.info(f"Loading data for {args.data} with kfold={args.kfold}")
-    data_loader = load_data(data_root_folder, args.task, batch_size, train_transforms, val_transforms, num_workers, accelerator.gradient_accumulation_steps, kfold=args.kfold)
+    data_root_folder = data_config.get_data_root_folder(args.multi_view)
+    
+    logger.info(f"Loading data for {args.data} with kfold={args.kfold} and multi_view={args.multi_view}")
+    data_loader = load_data(data_root_folder, args.task, batch_size, train_transforms, val_transforms, num_workers, accelerator.gradient_accumulation_steps, kfold=args.kfold, multi_view=args.multi_view)
 
     # Get actual number of classes from dataset
     if isinstance(data_loader, tuple):
@@ -97,11 +119,58 @@ def setup(args, accelerator: Accelerator):
     if args.task == "binary":
         num_classes = 1  # Binary classification has 1 output
     else:
-        num_classes = len(dataset.labels)  # Get number of classes from dataset
-
+        num_classes = len(set(dataset.labels))  # Get number of classes from dataset
+        
     # Model setup
-    backbone = load_pretrained_model(model_repo)
-    model = DinoClassifier(backbone, num_classes=num_classes)
+    if args.model == "ark":
+        ark_checkpoint_path = args.pretrained_ark_path
+        # Determine if linear probing or fine-tuning 
+        # For linear probing: use projector (use_backbone_projector=True)
+        # For fine-tuning: don't use projector (use_backbone_projector=False)
+        use_backbone_projector = not args.unfreeze_backbone
+        logger.info(f"Ark model setup: {'Linear probing' if use_backbone_projector else 'Fine-tuning'} - "
+                   f"use_backbone_projector={use_backbone_projector}")
+        
+        # Load Ark backbone
+        backbone = load_prtrained_ark_model(
+            checkpoint_path=ark_checkpoint_path,
+            num_classes=num_classes,
+            img_size=768,
+            patch_size=4,
+            window_size=12,
+            embed_dim=192,
+            depths=(2, 2, 18, 2),
+            num_heads=(6, 12, 24, 48),
+            projector_features=1376,  # Ark default projector features
+            use_mlp=False,
+            device=accelerator.device
+        )
+        model = ArkClassifier(backbone, 
+                               num_classes=num_classes, 
+                               multi_view=args.multi_view, 
+                               num_views=multi_view_config.num_views if multi_view_config else None,
+                               view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
+                               adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
+                               view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None,
+                               use_backbone_projector=use_backbone_projector)
+    elif args.model == "medsiglip":
+        backbone = load_pretrained_model(model_repo)
+        model = MedSigClassifier(backbone, 
+                               num_classes=num_classes, 
+                               multi_view=args.multi_view, 
+                               num_views=multi_view_config.num_views if multi_view_config else None,
+                               view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
+                               adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
+                               view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None)
+    else:
+        backbone = load_pretrained_model(model_repo)
+        model = DinoClassifier(backbone, 
+                               num_classes=num_classes, 
+                               multi_view=args.multi_view, 
+                               num_views=multi_view_config.num_views if multi_view_config else None,
+                               view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
+                               adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
+                               view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None)
 
     # Loss function and evaluation metrics setup
     if args.weighted_loss:
@@ -144,7 +213,9 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
     # Initialize wandb
     if accelerator.is_main_process:
         wandb_name = f"{CURR_TIME}_{args.data}_{args.model}"
-        if args.unfreeze_backbone:
+        if args.progressive_unfreeze:
+            wandb_name += "_progressive_unfreeze"
+        elif args.unfreeze_backbone:
             wandb_name += "_unfreeze_backbone"
         if is_kfold:
             wandb_name += f"_kfold"
@@ -152,7 +223,7 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
             wandb_name += "_weighted_loss"
         if args.resume:
             wandb_name += "_resume"
-        wandb.init(project="dinov2-linear-probe", name=wandb_name, config={"epochs": num_epochs, "batch_size": batch_size})
+        wandb.init(project="cxr_models_benchmark", name=wandb_name, config={"epochs": num_epochs, "batch_size": batch_size})
     
     # Initialize trainer
     trainer = Trainer(
@@ -183,14 +254,21 @@ def main(args):
         raise ValueError("When `--resume` is specified, `--resume-checkpoint-path` must also be specified.")
     if not args.unfreeze_backbone and args.unfreeze_num_layers is not None:
         raise ValueError("When `--unfreeze-num-layers` is specified, `--unfreeze-backbone` must also be specified.")
-    
+    if not args.unfreeze_backbone and args.progressive_unfreeze:
+        raise ValueError("When `--progressive-unfreeze` is specified, `--unfreeze-backbone` must also be specified.")
+    if args.model == "ark" and args.pretrained_ark_path is None:
+        raise ValueError("Ark checkpoint path must be specified for Ark model. Use --pretrained-ark-path argument.")
     accelerator = Accelerator(mixed_precision="fp16" if args.optimize_compute else "no",
                               gradient_accumulation_steps=2)
     
     # Create both output and checkpoint directories
     checkpoint_folder_name = f"checkpoints_{CURR_TIME}_{args.data}_{args.model}"
-    if args.unfreeze_backbone:
+    if args.progressive_unfreeze:
+        checkpoint_folder_name += "_progressive_unfreeze"
+    elif args.unfreeze_backbone:
         checkpoint_folder_name += "_unfreeze_backbone"
+    if args.multi_view:
+        checkpoint_folder_name += "_multi_view"
     output_dir = os.path.join(CURR_DIR, args.output_dir)
     checkpoint_dir = os.path.join(output_dir, checkpoint_folder_name)
     if args.resume_checkpoint_path:

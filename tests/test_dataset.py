@@ -50,10 +50,21 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         self.root = tempfile.mkdtemp()
         os.makedirs(os.path.join(self.root, "images", "train"), exist_ok=True)
         
-        # Create mock DICOM files
+        # Create mock DICOM files for single-view
         for i in range(5):
             ds = create_mock_dicom()
             ds.save_as(os.path.join(self.root, "images", "train", f"img{i}.dcm"))
+        
+        # Create multi-view directory structure
+        os.makedirs(os.path.join(self.root, "images", "train", "study0"), exist_ok=True)
+        os.makedirs(os.path.join(self.root, "images", "train", "study1"), exist_ok=True)
+        
+        # Create mock DICOM files for multi-view (4 views per study)
+        view_files = ['L_CC.dcm', 'L_MLO.dcm', 'R_CC.dcm', 'R_MLO.dcm']
+        for study_id in ['study0', 'study1']:
+            for view_file in view_files:
+                ds = create_mock_dicom()
+                ds.save_as(os.path.join(self.root, "images", "train", study_id, view_file))
         
         # Create binary classification data
         self.binary_train = pd.DataFrame({
@@ -67,6 +78,13 @@ class TestRadImageClassificationDataset(unittest.TestCase):
             "label1": [1, 0, 1, 0, 1],
             "label2": [0, 1, 1, 0, 0]
         }).set_index("image_id")
+        
+        # Create multi-view classification data
+        self.multiview_train = pd.DataFrame({
+            "study_id": ["study0", "study1"],
+            "label1": [1, 0],
+            "label2": [0, 1]
+        }).set_index("study_id")
 
     def tearDown(self):
         """Clean up after each test."""
@@ -82,30 +100,116 @@ class TestRadImageClassificationDataset(unittest.TestCase):
 
         # Test binary classification
         self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
-        dataset = RadImageClassificationDataset(self.root, split="train", task="binary")
+        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", target_size=(224, 224))
         self.assertEqual(len(dataset), 5)
         img, target, img_id = dataset[0]
-        self.assertIsInstance(img, np.ndarray)
+        self.assertIsInstance(img, torch.Tensor)
         self.assertIsInstance(target, torch.Tensor)
-        self.assertEqual(img.shape, (224, 224))
-        self.assertEqual(target.shape, (1,))
+        self.assertEqual(img.shape, (3, 224, 224))  # 3 channels due to repeat
+        self.assertEqual(target.shape, ())  # Scalar tensor for binary classification
         self.assertTrue(torch.all((target == 0) | (target == 1)))
 
         # Test multilabel classification
         self.multilabel_train.to_csv(os.path.join(self.root, "train_labels.csv"))
-        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel")
+        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", target_size=(224, 224))
         img, target, img_id = dataset[0]
         self.assertEqual(target.shape, (2,))
 
+    def test_multi_view_dataset(self):
+        """Test multi-view dataset functionality."""
+        # Test multi-view multilabel classification
+        self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        dataset = RadImageClassificationDataset(
+            self.root, split="train", task="multilabel", multi_view=True, target_size=(224, 224)
+        )
+        
+        self.assertEqual(len(dataset), 2)  # 2 studies
+        
+        # Test multi-view data loading
+        img, target, study_id = dataset[0]
+        self.assertIsInstance(img, torch.Tensor)
+        self.assertEqual(img.shape, (4, 3, 224, 224))  # 4 views, 3 channels, H, W
+        self.assertEqual(target.shape, (2,))  # 2 labels
+        self.assertIn(study_id, ["study0", "study1"])
+        
+        # Test that all 4 views are loaded
+        for view_idx in range(4):
+            view_img = img[view_idx]
+            self.assertEqual(view_img.shape, (3, 224, 224))
+            self.assertTrue(torch.all(view_img >= 0) and torch.all(view_img <= 255))
+
+    def test_multi_view_with_transforms(self):
+        """Test multi-view dataset with transforms."""
+        self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Grayscale(num_output_channels=3),
+            transforms.Resize((224, 224)),
+            transforms.ToTensor()
+        ])
+        
+        dataset = RadImageClassificationDataset(
+            self.root, split="train", task="multilabel", 
+            transform=transform, multi_view=True
+        )
+        
+        img, target, study_id = dataset[0]
+        self.assertIsInstance(img, torch.Tensor)
+        self.assertEqual(img.shape, (4, 3, 224, 224))
+        self.assertEqual(target.shape, (2,))
+
+    def test_multiclass_classification(self):
+        """Test multiclass classification (e.g., BIRAD classification)."""
+        # Create multiclass data (e.g., BIRAD 0-5)
+        multiclass_train = pd.DataFrame({
+            "image_id": [f"img{i}" for i in range(5)],
+            "label": [0, 1, 2, 3, 4]  # BIRAD categories
+        }).set_index("image_id")
+        
+        multiclass_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        
+        dataset = RadImageClassificationDataset(
+            self.root, split="train", task="multiclass", transform=None, target_size=(224, 224)
+        )
+        
+        self.assertEqual(len(dataset), 5)
+        img, target, img_id = dataset[0]
+        self.assertIsInstance(img, torch.Tensor)
+        self.assertEqual(img.shape, (3, 224, 224))
+        self.assertEqual(target.shape, ())  # Scalar tensor for multiclass classification
+        self.assertTrue(torch.all((target >= 0) & (target <= 4)))  # BIRAD 0-4
+
+    def test_multiclass_multi_view(self):
+        """Test multiclass classification with multi-view data."""
+        # Create multiclass multi-view data
+        multiclass_multiview_train = pd.DataFrame({
+            "study_id": ["study0", "study1"],
+            "label": [2, 3]  # BIRAD categories
+        }).set_index("study_id")
+        
+        multiclass_multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        
+        dataset = RadImageClassificationDataset(
+            self.root, split="train", task="multiclass",
+            transform=None, multi_view=True, target_size=(224, 224)
+        )
+        
+        self.assertEqual(len(dataset), 2)
+        img, target, study_id = dataset[0]
+        self.assertIsInstance(img, torch.Tensor)
+        self.assertEqual(img.shape, (4, 3, 224, 224))
+        self.assertEqual(target.shape, ())  # Scalar tensor for multiclass classification
+
     def test_transforms(self):
         """Test that transforms are correctly applied."""
-        # Ensure we're using binary classification data
         self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
         
         transform = transforms.Compose([
-            transforms.ToTensor(),
+            transforms.ToPILImage(),
+            transforms.Grayscale(num_output_channels=3),
             transforms.Resize((224, 224)),
-            transforms.Lambda(lambda x: x.repeat(3, 1, 1))  # Convert single channel to 3 channels
+            transforms.ToTensor()
         ])
         dataset = RadImageClassificationDataset(
             self.root, split="train", task="binary", transform=transform
@@ -113,6 +217,52 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         img, _, _ = dataset[0]
         self.assertIsInstance(img, torch.Tensor)
         self.assertEqual(img.shape, (3, 224, 224))
+
+    def test_multi_view_missing_files(self):
+        """Test that multi-view dataset raises error for missing view files."""
+        self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+    
+        # Remove one view file to test error handling
+        os.remove(os.path.join(self.root, "images", "train", "study0", "L_CC.dcm"))
+    
+        dataset = RadImageClassificationDataset(
+            self.root, split="train", task="multilabel", multi_view=True, target_size=(224, 224)
+        )
+        
+        with self.assertRaises(FileNotFoundError):
+            _ = dataset[0]  # This should raise the error when trying to load the missing file
+
+    def test_dataset_labels_property(self):
+        """Test that dataset correctly exposes labels property."""
+        self.multilabel_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", target_size=(224, 224))
+        self.assertEqual(dataset.labels, ["label1", "label2"])
+
+    def test_dataset_len(self):
+        """Test dataset length for different configurations."""
+        # Single-view dataset
+        self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", target_size=(224, 224))
+        self.assertEqual(len(dataset), 5)
+        
+        # Multi-view dataset
+        self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", multi_view=True, target_size=(224, 224))
+        self.assertEqual(len(dataset), 2)
+
+    def test_dataset_getitem_consistency(self):
+        """Test that dataset returns consistent data types and shapes."""
+        self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", target_size=(224, 224))
+        
+        # Test consistency across multiple calls
+        for i in range(len(dataset)):
+            img, target, img_id = dataset[i]
+            self.assertIsInstance(img, torch.Tensor)
+            self.assertIsInstance(target, torch.Tensor)
+            self.assertEqual(img.shape, (3, 224, 224))
+            self.assertEqual(target.shape, ())  # Scalar tensor for binary classification
+            self.assertIsInstance(img_id, str)
 
 if __name__ == "__main__":
     unittest.main() 

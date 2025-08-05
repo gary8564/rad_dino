@@ -3,18 +3,9 @@ channels:
   - conda-forge
 dependencies:
   - python=3.10
+  - python-dotenv
   - ipykernel
   - jupyter
-  - matplotlib
-  - numpy=2.2.5
-  - opencv=4.11.0
-  - pandas
-  - scikit-learn
-  - scikit-image
-  - scipy=1.15.2
-  - seaborn
-  - supervision
-  - tqdm
   - pip
   - pip:
       - -e .

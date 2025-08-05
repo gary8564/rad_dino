@@ -8,9 +8,10 @@ from tqdm import tqdm
 import wandb
 from torch.amp import autocast, GradScaler
 from transformers import get_cosine_schedule_with_warmup
-from rad_dino.utils.train_utils import EarlyStopping
+from rad_dino.train.train_utils import EarlyStopping
 from rad_dino.utils.data_utils import KFold
 from rad_dino.loggings.setup import init_logging
+from rad_dino.train.model_registry import get_model_info, get_layer_term
 
 init_logging()
 logger = logging.getLogger(__name__)
@@ -49,41 +50,94 @@ class Trainer:
             model (torch.nn.Module): The model containing the backbone
             n (int): Number of layers to unfreeze from the end
         """
-        num_total_layers = model.backbone.config.num_hidden_layers
-        if n > num_total_layers or n < 1: 
-            raise ValueError(f"Number of unfreeze layers {n} cannot be greater than the total number of layers {num_total_layers} or less than 1")
+        # Detect model type and get layer information
+        model_info = self._get_model_layer_info(model)
+        model_type = model_info['model_type']
+        total_layers = model_info['total_layers']
+        layer_pattern = model_info['layer_pattern']
+        
+        if n > total_layers or n < 1:
+            raise ValueError(f"Number of unfreeze layers {n} cannot be greater than the total number of layers {total_layers} or less than 1")
         
         # First freeze all backbone parameters
         self._freeze_backbone(model)
-            
-        # Then unfreeze the specified layers
-        for i in range(num_total_layers - 1, num_total_layers - n - 1, -1):
+        
+        # Then unfreeze the specified layers from the end
+        for i in range(total_layers - 1, total_layers - n - 1, -1):
             for name, param in model.backbone.named_parameters():
-                if f"layer.{i}" in name:
-                    logger.info(f"Unfreezing backbone parameter: {name}")
+                if layer_pattern.format(i) in name:
+                    logger.info(f"Unfreezing {model_type} backbone parameter: {name}")
                     param.requires_grad = True
+
+    def _get_model_layer_info(self, model):
+        """Get layer information for different model types using the model registry.
+        
+        Args:
+            model: The model to analyze
+            
+        Returns:
+            dict: Contains model type, total layers, and layer pattern
+        """
+        return get_model_info(model, self.args.model)
+
+    def _progressive_unfreeze(self, model, current_epoch):
+        """
+        Progressively unfreeze layers of the backbone based on training progress every two epochs,
+        starting from the classification head and moving backwards. 
+        """
+        # Get model information
+        model_info = self._get_model_layer_info(model)
+        model_type = model_info['model_type']
+        total_layers = model_info['total_layers']
+        
+        # Ensure backbone is frozen initially
+        if current_epoch == 0:
+            self._freeze_backbone(model)
+            return
+        
+        # Only unfreeze at even epochs (2, 4, 6, ...)
+        if current_epoch % 2 == 0:
+            layers_to_unfreeze = current_epoch // 2
+            layers_to_unfreeze = min(layers_to_unfreeze, total_layers)
+            
+            # Get appropriate layer term from the model registry
+            layer_term = get_layer_term(model, self.args.model)
+            logger.info(f"Progressive unfreezing: Unfreezing {layers_to_unfreeze} {layer_term} at epoch {current_epoch}")
+            self._unfreeze_last_n_blocks(model, layers_to_unfreeze)
+            
+        
+    def _apply_unfreezing_strategy(self, model: torch.nn.Module, current_epoch: int):
+        """
+        Apply the appropriate unfreezing strategy based on args.
+        """
+        # Get model information
+        model_info = self._get_model_layer_info(model)
+        model_type = model_info['model_type']
+        
+        if self.args.unfreeze_backbone:
+            if self.args.unfreeze_num_layers is not None:
+                # Get appropriate layer term from the model registry
+                layer_term = get_layer_term(model, self.args.model)
+                logger.info(f"Unfreezing {self.args.unfreeze_num_layers} {layer_term} from the end of the {model_type} backbone.")
+                self._unfreeze_last_n_blocks(model, n=self.args.unfreeze_num_layers)
+            elif self.args.progressive_unfreeze:
+                self._progressive_unfreeze(model, current_epoch)
+            else:
+                logger.info(f"Unfreezing all layers of the {model_type} backbone.")
+                self._unfreeze_all_backbone(model)
+        else:
+            logger.info(f"{model_type} backbone is frozen.")
+            self._freeze_backbone(model)
 
     def _get_parameter_groups(self, model: torch.nn.Module) -> tuple[list, list]:
         """Separate model parameters into backbone and head parameters.
         
         Args:
-            model: The model to separate parameters for
+            model
             
         Returns:
-            tuple containing (backbone_params, head_params)
+            tuple (backbone_params, head_params)
         """
-        # Handle backbone unfreezing if specified
-        if self.args.unfreeze_backbone:
-            if self.args.unfreeze_num_layers is not None:
-                logger.info(f"Unfreezing {self.args.unfreeze_num_layers} layers from the end of the ViT backbone.")
-                self._unfreeze_last_n_blocks(model, n=self.args.unfreeze_num_layers)
-            else:
-                logger.info("Unfreezing all layers of the ViT backbone.")
-                self._unfreeze_all_backbone(model)
-        else:
-            logger.info("Backbone is frozen.")
-            self._freeze_backbone(model)
-        
         # Debugging: check all trainable parameters
         for name, param in model.named_parameters():
             if param.requires_grad:
@@ -102,6 +156,26 @@ class Trainer:
                 head_params.append(param)
                 
         return backbone_params, head_params
+
+    def _update_optimizer_parameter_groups(self, optimizer: torch.optim.Optimizer, model: torch.nn.Module):
+        """
+        Update optimizer parameter groups for progressive unfreezing.
+        """
+        backbone_params, head_params = self._get_parameter_groups(model)
+        
+        # Get existing parameters in optimizer
+        existing_params = {p for g in optimizer.param_groups for p in g['params']}
+        
+        new_backbone_params = [p for p in backbone_params if p not in existing_params]
+        
+        if new_backbone_params:
+            logger.info(f"Adding {len(new_backbone_params)} new backbone parameters to optimizer")
+            optimizer.add_param_group({
+                'params': new_backbone_params,
+                'lr': self.train_config.optim.base_lr * 0.1
+            })
+        else:
+            logger.debug("No new backbone parameters to add to optimizer")
 
     def train_per_epoch(self, curr_epoch, model, data_loader, optimizer, scheduler, log_prefix):
         n_steps_per_epoch = math.ceil(len(data_loader.dataset) / self.train_config.batch_size)
@@ -238,14 +312,20 @@ class Trainer:
         # Create fresh model copy
         model = copy.deepcopy(base_model)
         
+        # Apply initial unfreezing strategy
+        self._apply_unfreezing_strategy(model, current_epoch=0)
+        
         # Get parameter groups
         backbone_params, head_params = self._get_parameter_groups(model)
         
         # Create parameter groups with different learning rates
         param_groups = [
-            {'params': head_params, 'lr': self.train_config.optim.base_lr},
-            {'params': backbone_params, 'lr': self.train_config.optim.base_lr * 0.1}
+            {'params': head_params, 'lr': self.train_config.optim.base_lr}
         ]
+        
+        # Only add backbone parameters if there are any (not all frozen)
+        if len(backbone_params) > 0:
+            param_groups.append({'params': backbone_params, 'lr': self.train_config.optim.base_lr * 0.1})
         
         # Initialize optimizer
         optimizer = torch.optim.AdamW(
@@ -255,7 +335,7 @@ class Trainer:
         
         # Initialize scheduler if configured
         lr_scheduler = None
-        if self.train_config.lr_scheduler:
+        if self.train_config.lr_scheduler and not self.args.progressive_unfreeze:
             num_training_steps = (len(train_loader) // self.accelerator.gradient_accumulation_steps) * self.train_config.epochs
             num_warmup_steps = int(self.train_config.lr_scheduler.warmup_ratio * num_training_steps)
             lr_scheduler = get_cosine_schedule_with_warmup(
@@ -346,6 +426,32 @@ class Trainer:
             
             # Training loop
             for epoch in range(kfold.start_epoch, num_epochs):
+                # Progressive unfreezing - handle before training starts to avoid race conditions
+                if self.args.progressive_unfreeze and self.accelerator.is_main_process:
+                    # Apply unfreezing strategy on main process
+                    if epoch > 0:
+                        self._apply_unfreezing_strategy(kfold.model, current_epoch=epoch)
+                        self._update_optimizer_parameter_groups(kfold.optimizer, kfold.model)
+                    
+                    # Log unfreezing progress to wandb
+                    model_info = self._get_model_layer_info(kfold.model)
+                    layer_pattern = model_info['layer_pattern']
+                    total_layers = model_info['total_layers']
+                    
+                    # Count unfrozen layers
+                    unfrozen_layers = sum(1 for name, param in kfold.model.backbone.named_parameters() 
+                                        if any(pattern.format(i) in name for i in range(total_layers) 
+                                              for pattern in [layer_pattern]) and param.requires_grad)
+                    
+                    wandb.log({
+                        f"{log_prefix}trainer/unfrozen_layers": unfrozen_layers,
+                        f"{log_prefix}trainer/total_layers": total_layers,
+                        f"{log_prefix}trainer/unfreeze_ratio": unfrozen_layers / total_layers,
+                    })
+                    
+                    # Synchronize all processes to ensure unfreezing is applied consistently
+                    self.accelerator.wait_for_everyone()
+                
                 train_loss, train_acc, train_auroc = self.train_per_epoch(
                     epoch, kfold.model, kfold.train_loader, kfold.optimizer,
                     kfold.lr_scheduler, log_prefix
@@ -391,13 +497,30 @@ class Trainer:
                                 # Get the unwrapped model state
                                 model_state = self.accelerator.get_state_dict(kfold.model)
                                 # Save checkpoint
-                                torch.save({
+                                checkpoint_data = {
                                     "epoch": epoch + 1,
                                     "model_state": model_state,
                                     "optimizer_state": kfold.optimizer.state_dict(),
                                     "scheduler_state": kfold.lr_scheduler.state_dict() if kfold.lr_scheduler else None,
                                     "best_metric": kfold.best_metric,
-                                }, kfold.best_checkpoint)
+                                }
+                                
+                                # Add multi-view configuration if applicable
+                                if hasattr(kfold.model, 'multi_view') and kfold.model.multi_view:
+                                    checkpoint_data.update({
+                                        "num_views": kfold.model.num_views,
+                                        "view_fusion_type": kfold.model.view_fusion_type,
+                                        "adapter_dim": getattr(kfold.model, 'adapter_dim', None),
+                                        "view_fusion_hidden_dim": getattr(kfold.model, 'view_fusion_hidden_dim', None),
+                                    })
+                                
+                                # Add Ark-specific configuration if applicable
+                                if hasattr(kfold.model, 'use_backbone_projector'):
+                                    checkpoint_data.update({
+                                        "use_backbone_projector": kfold.model.use_backbone_projector,
+                                    })
+                                
+                                torch.save(checkpoint_data, kfold.best_checkpoint)
                                 logger.info(f"New best validation metric = {kfold.best_metric:.4f} at epoch {epoch+1}, saved best.pt")
                             except Exception as e:
                                 logger.error(f"Failed to save checkpoint: {e}")
@@ -443,7 +566,7 @@ class Trainer:
             avg_ap = np.mean([res["val_ap"] for res in kfold_results])
             std_ap = np.std([res["val_ap"] for res in kfold_results])
             logger.info(f"K-fold results: Mean AUPRC={avg_ap:.4f} ± {std_ap:.4f}")
-            wandb.log({"kfold_mean_ap": avg_ap, "kfold_std_ap": std_ap})
+            wandb.log({"kfold/mean_ap": avg_ap, "kfold/std_ap": std_ap})
         
         if best_model_global is None and self.accelerator.is_main_process:
             if is_kfold:
@@ -461,7 +584,14 @@ class Trainer:
             # Get input size for the model
             input_size = MODEL_INPUT_SIZES.get(model_name, (224, 224))  # Default to 224x224
             device = "cpu"
-            dummy_input = torch.randn(1, 3, *input_size, device=device)
+            
+            # Check if model is multi-view and create appropriate dummy input
+            if hasattr(model, 'multi_view') and model.multi_view:
+                dummy_input = torch.randn(1, 4, 3, *input_size, device=device)  # [B, 4, C, H, W]
+                logger.info(f"Exporting ONNX model for multi-view with input shape: {dummy_input.shape}")
+            else:
+                dummy_input = torch.randn(1, 3, *input_size, device=device)  # [B, C, H, W]
+                logger.info(f"Exporting ONNX model for single-view with input shape: {dummy_input.shape}")
             
             # Export the model
             onnx_path = os.path.join(self.checkpoint_dir, "best.onnx")

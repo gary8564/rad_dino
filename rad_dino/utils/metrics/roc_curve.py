@@ -1,7 +1,6 @@
 import numpy as np 
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 import matplotlib
-import matplotlib.pyplot as plt
 
 def compute_stats(stats, ci=95):
     mean = np.mean(stats)

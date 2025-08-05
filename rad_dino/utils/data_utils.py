@@ -28,10 +28,10 @@ class KFold:
 
 # Cope with variable-length custom dataset
 def collate_fn(batch):
-    imgs, targets, image_ids = zip(*batch)
-    pixel_values = torch.stack(imgs, dim=0)    # [B, C, H, W]
-    target = torch.stack(targets, dim=0)       # [B, num_classes]
-    return pixel_values, target, image_ids
+    imgs, targets, sample_ids = zip(*batch)
+    pixel_values = torch.stack(imgs, dim=0)    # [B, C, H, W] or [B, 4, C, H, W]
+    target = torch.stack(targets, dim=0)       # [B, num_classes] or [B, 4, num_classes]
+    return pixel_values, target, sample_ids
 
 # Data augmentation: image transformation
 def get_transforms(pretrained_model_path):
@@ -40,41 +40,59 @@ def get_transforms(pretrained_model_path):
     Get the transformers from pretrained model to ensure custom data is 
     transformed/formatted in the same way the data the original model was 
     trained on.
+    
+    Args:
+        pretrained_model_path: Path to the pretrained model
     """
-    image_processor  = AutoImageProcessor.from_pretrained(pretrained_model_path)
-    mean = image_processor.image_mean
-    std = image_processor.image_std
-    interpolation = image_processor.resample
-    # crop_size = (518, 518) 
-    # size = 518 
-    crop_size = (image_processor.crop_size["height"], image_processor.crop_size["width"])
-    size = image_processor.size["shortest_edge"]
-    normalize = transforms.Normalize(mean=mean, std=std)
+    image_processor = AutoImageProcessor.from_pretrained(pretrained_model_path)
+    if "swin" in pretrained_model_path.lower():
+        # Special handling for Ark models (not from HuggingFace)
+        # Ark models use 768x768 image size and ImageNet normalization
+        mean = image_processor.image_mean
+        std = image_processor.image_std
+        interpolation = image_processor.resample
+        crop_size = (768, 768)
+        size = 768
+        logger.info(f"Ark model are not from HuggingFace, image size {size}x{size} need to be specified manually!")
+        normalize = transforms.Normalize(mean=mean, std=std)
+    else:
+        # Standard HuggingFace model handling
+        mean = image_processor.image_mean
+        std = image_processor.image_std
+        interpolation = image_processor.resample
+        crop_size = (image_processor.crop_size["height"], image_processor.crop_size["width"])
+        size = image_processor.size["shortest_edge"]
+        normalize = transforms.Normalize(mean=mean, std=std)
     
     # First resize all images to a consistent size before any other transforms
     train_transform = transforms.Compose([
         transforms.ToPILImage(),
-        transforms.Resize(size),  
+        transforms.Grayscale(num_output_channels=3),
+        transforms.Resize(size, interpolation=interpolation),  
         transforms.RandomResizedCrop(crop_size, scale=(0.08, 1.0), ratio=(0.75, 1.3333), interpolation=interpolation),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomApply(
                     [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                     p=0.8,
-                ),
-                transforms.RandomGrayscale(p=0.2),
+        ),
+        transforms.RandomGrayscale(p=0.2),
         transforms.RandomAffine(
             degrees=30,                            # ±30° rotation
             scale=(0.8,1.2),                       # ±20% zoom
             shear=15                               # ±15° shear
         ),
-        transforms.GaussianBlur(kernel_size=5, sigma=(0.1,2.0)),
+        transforms.RandomApply(
+            [transforms.GaussianBlur(kernel_size=5, sigma=(0.1,2.0))],
+            p=0.5,
+        ),
         transforms.ToTensor(),
         normalize,
     ])
 
     val_transform = transforms.Compose([
         transforms.ToPILImage(),
-        transforms.Resize(size),  
+        transforms.Grayscale(num_output_channels=3),
+        transforms.Resize(size, interpolation=interpolation),  
         transforms.CenterCrop(crop_size),
         transforms.ToTensor(),
         normalize,
@@ -89,16 +107,17 @@ def create_loaders(data_root_folder: str,
                   val_transforms: transforms.Compose,
                   mini_batch_size: int,
                   batch_size: int,
-                  num_workers: int):
+                  num_workers: int,
+                  multi_view: bool = False,
+                  ):
     train_ds = Subset(
-        RadImageClassificationDataset(data_root_folder, "train", task, train_transforms),
+        RadImageClassificationDataset(data_root_folder, "train", task, train_transforms, multi_view=multi_view),
         train_idx
     )
     val_ds = Subset(
-        RadImageClassificationDataset(data_root_folder, "train", task, val_transforms),
+        RadImageClassificationDataset(data_root_folder, "train", task, val_transforms, multi_view=multi_view),
         val_idx
     )
-    
     train_loader = DataLoader(
         train_ds, 
         batch_size=mini_batch_size, 
@@ -128,8 +147,9 @@ def load_data(data_root_folder: str,
               gradient_accumulation_steps: int,
               kfold: int | None = None,
               train_size: float = 0.75,
-              seed: int = 42,):
-    base_ds = RadImageClassificationDataset(data_root_folder, "train", task, transform=None)
+              seed: int = 42,
+              multi_view: bool = False):
+    base_ds = RadImageClassificationDataset(data_root_folder, "train", task, transform=None, target_size=(518, 518), multi_view=multi_view)
     
     # Calculate mini-batch size
     mini_batch_size = batch_size // gradient_accumulation_steps
@@ -145,23 +165,22 @@ def load_data(data_root_folder: str,
             Y = base_ds.df["label"].to_numpy(dtype=np.int64)
             skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
             return [create_loaders(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
-                                 mini_batch_size, batch_size, num_workers) 
-                   for train_idx, val_idx in skf.split(base_ds.image_ids, Y)]
+                                 mini_batch_size, batch_size, num_workers, multi_view) 
+                   for train_idx, val_idx in skf.split(base_ds.sample_ids, Y)]
         elif task == "multilabel":
             # multilabel: use MultilabelStratifiedKFold
             Y = base_ds.df.to_numpy(dtype=np.int64)
             mskf = MultilabelStratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
             return [create_loaders(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
-                                 mini_batch_size, batch_size, num_workers) 
-                   for train_idx, val_idx in mskf.split(X=base_ds.image_ids, y=Y)]
+                                 mini_batch_size, batch_size, num_workers, multi_view) 
+                   for train_idx, val_idx in mskf.split(X=base_ds.sample_ids, y=Y)]
         else:
             # multiclass: use StratifiedKFold
             Y = base_ds.df.to_numpy(dtype=np.int64)
             skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
             return [create_loaders(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
-                                 mini_batch_size, batch_size, num_workers) 
-                   for train_idx, val_idx in skf.split(base_ds.image_ids, Y)]
-    
+                                 mini_batch_size, batch_size, num_workers, multi_view) 
+                   for train_idx, val_idx in skf.split(base_ds.sample_ids, Y)]
     else:
         logger.info("Single split case")
         n_total_samples = len(base_ds)
@@ -173,7 +192,7 @@ def load_data(data_root_folder: str,
         perm = torch.randperm(n_total_samples).tolist()
         train_idx, val_idx = perm[:n_train], perm[n_train:]
         return create_loaders(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
-                            mini_batch_size, batch_size, num_workers)
+                            mini_batch_size, batch_size, num_workers, multi_view)
         
 def get_class_weights(task: str, dataset: Dataset):
     """
