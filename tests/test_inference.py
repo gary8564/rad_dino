@@ -21,7 +21,7 @@ class TestInference(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures"""
-        self.temp_dir = tempfile.mkdtemp()
+        self.temp_dir = tempfile.mkdtemp(dir="/tmp")
         self.mock_accelerator = Mock()
         self.mock_accelerator.device = torch.device('cpu')
         self.mock_accelerator.is_main_process = True
@@ -199,6 +199,13 @@ class TestInference(unittest.TestCase):
         mock_ds = Mock()
         mock_ds.labels = ['label1', 'label2']
         mock_dataset.return_value = mock_ds
+        
+        # Mock the dataset's labels property properly
+        mock_ds.__getitem__ = Mock(return_value=mock_ds)
+        mock_ds.__len__ = Mock(return_value=10)
+        
+        # Ensure labels is a real list, not a Mock
+        mock_ds.labels = ['label1', 'label2']
         
         # Mock data loader
         mock_loader = Mock()

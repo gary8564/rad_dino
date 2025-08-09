@@ -15,12 +15,11 @@ class EvaluationProcessor:
     """Handles processing and saving of inference evaluation metrics"""
     
     def __init__(self, accelerator: Accelerator, output_paths: OutputPaths, 
-                 task: str, class_labels: List, num_classes: int):
+                 task: str, class_labels: List):
         self.accelerator = accelerator
         self.output_paths = output_paths
         self.task = task
         self.class_labels = class_labels
-        self.num_classes = num_classes
         
         # Initialize result storage
         self.all_ids = []
@@ -33,8 +32,6 @@ class EvaluationProcessor:
             true_col = Y_true.astype(int).tolist()
             pred_indices = np.argmax(Y_pred_prob, axis=1)
             pred_labels = [self.class_labels[i] for i in pred_indices]
-            # Convert integer labels to BIRADS strings for visualization
-            class_labels = [f"BIRADS_{label+1}" for label in self.class_labels]
         elif self.task == "binary":
             true_col = Y_true.squeeze().astype(int).tolist()
             prob_pos = Y_pred_prob.squeeze()
@@ -50,12 +47,8 @@ class EvaluationProcessor:
         return true_col, pred_labels 
 
     def _prepare_class_labels_for_metrics(self) -> List:
-        """Prepare class labels for metrics computation - matches original fix"""
-        if self.task == "multiclass":
-            # Convert integer labels to BIRADS strings for visualization (matches original)
-            return [f"BIRADS_{label+1}" for label in self.class_labels]
-        else:
-            return self.class_labels 
+        """Return class labels for metrics computation"""
+        return self.class_labels 
     
     def add_batch_results(self, image_ids: List[str], targets: torch.Tensor, 
                          logits: torch.Tensor) -> None:

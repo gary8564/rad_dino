@@ -1,0 +1,37 @@
+{
+    "VinDr-CXR": {
+        "multilabel": [
+            "a chest x-ray image with cardiomegaly",
+            "a chest x-ray image with pleural effusion",
+            "a chest x-ray image with pulmonary fibrosis",
+            "a chest x-ray image with tuberculosis",
+            "a chest x-ray image with lung opacity",
+            "a chest x-ray image with pleural thickening",
+            "a chest x-ray image with aortic enlargement",
+            "a chest x-ray image with no finding"
+        ],
+        "binary": [
+            "a normal chest x-ray image",
+            "an abnormal chest x-ray image"
+        ]
+    },
+    "VinDr-Mammo": {
+        "multiclass": [
+            "a mammogram image showing BIRADS 1 - negative",
+            "a mammogram image showing BIRADS 2 - benign findings",
+            "a mammogram image showing BIRADS 3 - probably benign",
+            "a mammogram image showing BIRADS 4 - suspicious abnormality",
+            "a mammogram image showing BIRADS 5 - highly suspicious of malignancy"
+        ],
+        "binary": [
+            "a normal mammogram image",
+            "an abnormal mammogram image"
+        ]
+    },
+    "RSNA-Pneumonia": {
+        "binary": [
+            "a chest x-ray image showing normal lungs",
+            "a chest x-ray image showing pneumonia"
+        ]
+    }
+}

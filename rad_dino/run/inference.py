@@ -1,21 +1,23 @@
 import os
 import argparse
-import yaml
 import torch
 from accelerate import Accelerator
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from transformers import AutoImageProcessor
 import logging
-from typing import List
+from typing import List, Any
 from rad_dino.data.dataset import RadImageClassificationDataset
-from rad_dino.utils.data_utils import get_transforms, collate_fn
+from rad_dino.data.data_loader import create_test_loader
+from rad_dino.utils.transforms import get_transforms
 from rad_dino.configs.config import InferenceConfig, OutputPaths
+from rad_dino.utils.config_utils import setup_configs
 from rad_dino.loggings.setup import init_logging
 from rad_dino.utils.model_loader import load_model
 from rad_dino.eval.inference_engine import InferenceEngine
 from rad_dino.eval.explainable_visualizer import ExplainableVisualizer
 from rad_dino.eval.evaluation_processor import EvaluationProcessor
+from rad_dino.data.label_mapping import class_labels_mapping
 
 init_logging()
 logger = logging.getLogger(__name__)
@@ -73,46 +75,145 @@ def validate_args(config: InferenceConfig) -> None:
     if (config.save_heads is not None and config.attention_threshold is not None) and not config.show_attention:
         logger.warning("Attention visualization is not enabled, but save_heads and attention_threshold are specified.")
 
-def create_output_directories(output_dir: str, accelerator: Accelerator) -> OutputPaths:
+def create_output_directories(output_dir: str, accelerator: Accelerator, config: InferenceConfig) -> OutputPaths:
     """Create output directories and return paths"""
     if accelerator.is_main_process:
         os.makedirs(f"{output_dir}/figs", exist_ok=True)
         os.makedirs(f"{output_dir}/table", exist_ok=True)
-        os.makedirs(f"{output_dir}/gradcam", exist_ok=True)
-        os.makedirs(f"{output_dir}/attention", exist_ok=True)
-        os.makedirs(f"{output_dir}/lrp", exist_ok=True)
+        
+        # Only create visualization directories if needed
+        gradcam_path = None
+        attention_path = None
+        lrp_path = None
+        
+        if config.show_gradcam:
+            os.makedirs(f"{output_dir}/gradcam", exist_ok=True)
+            gradcam_path = f"{output_dir}/gradcam"
+            
+        if config.show_attention:
+            os.makedirs(f"{output_dir}/attention", exist_ok=True)
+            attention_path = f"{output_dir}/attention"
+            
+        if config.show_lrp:
+            os.makedirs(f"{output_dir}/lrp", exist_ok=True)
+            lrp_path = f"{output_dir}/lrp"
     
     return OutputPaths(
         base=output_dir,
         figs=f"{output_dir}/figs",
         table=f"{output_dir}/table",
-        gradcam=f"{output_dir}/gradcam",
-        attention=f"{output_dir}/attention",
-        lrp=f"{output_dir}/lrp"
+        gradcam=gradcam_path,
+        attention=attention_path,
+        lrp=lrp_path
     )
 
-def run_inference(model_wrapper, loader: DataLoader, 
-                 accelerator: Accelerator, config: InferenceConfig, 
-                 output_paths: OutputPaths, model_repo: str, 
-                 class_labels: List, num_classes: int) -> None:
-    """Main inference function"""
+def determine_class_info(config: InferenceConfig, dataset: RadImageClassificationDataset) -> tuple[List, int]:
+    """Determine class labels and number of classes based on different classification tasks.
+   
+    Args:
+        config: Inference configuration
+        dataset: Dataset containing class information
+        
+    Returns:
+        tuple: (class_labels, num_classes) - Class labels and number of classes
+    """
+    if config.task == "binary":
+        class_labels = None
+        num_classes = 1
+    elif config.task == "multiclass":
+        raw_class_labels = list(set(dataset.labels))
+        # Process class labels based on dataset-specific mappings
+        class_labels = class_labels_mapping(config.data, raw_class_labels)
+        num_classes = len(class_labels)
+    else:  # multilabel
+        class_labels = dataset.labels
+        num_classes = len(class_labels)
     
-    # Initialize components
+    return class_labels, num_classes
+
+def setup_data_loader(config: InferenceConfig, repo: str, accelerator: Accelerator) -> tuple[RadImageClassificationDataset, DataLoader]:
+    """Setup dataset and data loader
+    Args:
+        config: Inference configuration
+        repo: Model repository name for image processor
+        accelerator: Accelerator for distributed computing
+        
+    Returns:
+        tuple: (Dataset, DataLoader)
+    """
+    # Setup data configs 
+    data_config, _ = setup_configs(config.data, config.task)
+    
+    # Get data root folder from config
+    data_root_folder = data_config.get_data_root_folder(config.multi_view)
+
+    # Setup transforms
+    _, test_transforms = get_transforms(repo)
+
+    # Create test dataset and data loader
+    test_loader = create_test_loader(
+        data_root_folder=data_root_folder,
+        task=config.task,
+        batch_size=config.batch_size,
+        test_transforms=test_transforms,
+        multi_view=config.multi_view
+    )
+    test_ds = test_loader.dataset
+    test_loader = accelerator.prepare(test_loader)
+    return test_ds, test_loader
+
+def setup_model(config: InferenceConfig, repo: str, num_classes: int, 
+                              accelerator: Accelerator) -> Any:
+    """Setup model"""
+    # Load model
+    model_wrapper = load_model(config.model_path, repo, num_classes, accelerator, 
+                              config.show_gradcam, config.show_lrp, config.multi_view, 
+                              config.fusion_type, model_type=config.model)
+
+    # Validate ONNX multi-view compatibility
+    if config.multi_view and model_wrapper.model_type == 'onnx':
+        onnx_input_shape = model_wrapper.session.get_inputs()[0].shape
+        if len(onnx_input_shape) != 5 or onnx_input_shape[1] != 4:
+            raise ValueError("Multi-view inference requested but ONNX model was exported for single-view. Please export the ONNX model with multi-view support.")
+    
+    return model_wrapper
+
+def run_inference(model_wrapper, 
+                  loader: DataLoader,
+                  accelerator: Accelerator, 
+                  config: InferenceConfig, 
+                  output_paths: OutputPaths,
+                  model_repo: str, 
+                  class_labels: List, 
+                  num_classes: int) -> None:
+    """Main inference function
+    
+    Args:
+        model_wrapper: Model wrapper containing the trained model
+        loader: DataLoader for test data
+        accelerator: Accelerator for distributed training
+        config: Inference configuration
+        output_paths: Paths for saving outputs
+        model_repo: Model repository name for image processor
+        class_labels: List of class labels
+        num_classes: Number of classes
+    """
+    
+    # Initialize InferenceEngine and EvaluationProcessor for prediction and saving evaluation metrics
     inference_engine = InferenceEngine(model_wrapper, accelerator, config.show_attention)
+    evaluation_processor = EvaluationProcessor(
+        accelerator, output_paths, config.task, class_labels
+    )
     
-    # Load image processor for visualization if needed
+    # Initialize ExplainableVisualizer for visualization (only if any visualization flag is enabled)
+    explainable_visualizer = None
     image_processor = None
     if config.show_attention or config.show_gradcam or config.show_lrp:
         image_processor = AutoImageProcessor.from_pretrained(model_repo)
-    
-    explainable_visualizer = ExplainableVisualizer(
-        accelerator, output_paths, model_wrapper, image_processor,
-        config.show_attention, config.show_gradcam, config.show_lrp
-    )
-    
-    evaluation_processor = EvaluationProcessor(
-        accelerator, output_paths, config.task, class_labels, num_classes
-    )
+        explainable_visualizer = ExplainableVisualizer(
+            accelerator, output_paths, model_wrapper, image_processor,
+            config.show_attention, config.show_gradcam, config.show_lrp
+        )
     
     # Validate rollout computation
     if config.compute_rollout and not config.show_attention:
@@ -122,7 +223,9 @@ def run_inference(model_wrapper, loader: DataLoader,
     gradcam_count = 0
     
     for batch in tqdm(loader, desc="Inference", disable=not accelerator.is_main_process):
-        images, targets, image_ids = batch
+        images = batch["pixel_values"]
+        targets = batch["labels"]
+        image_ids = batch["sample_ids"]
         images = images.to(accelerator.device)
         
         # Clear CUDA cache before inference
@@ -132,37 +235,41 @@ def run_inference(model_wrapper, loader: DataLoader,
         # Run inference
         logits, attentions = inference_engine.run_inference(images, num_classes)
         
-        # Run visualizations
-        compute_gradcam = gradcam_count < MAX_GRADCAM_IMAGES and config.show_gradcam
-        if compute_gradcam and model_wrapper.model_type != 'onnx':
-            explainable_visualizer.run_gradcam_visualization(
-                model_wrapper.model, images, image_ids, class_labels
-            )
-        gradcam_count += 1
-        
-        # Run attention visualization
-        if config.show_attention and attentions is not None:
-            explainable_visualizer.run_attention_visualization(
-                attentions, images, image_ids, model_wrapper.config,
-                config.attention_threshold, config.save_heads, config.compute_rollout
-            )
-        
-        # Clear CUDA cache after visualizations
-        if accelerator.device.type == 'cuda':
-            torch.cuda.empty_cache()
+        # Run visualizations (only if enabled and visualizer is initialized)
+        if explainable_visualizer is not None:
+            # GradCAM visualization (limited to MAX_GRADCAM_IMAGES)
+            compute_gradcam = gradcam_count < MAX_GRADCAM_IMAGES and config.show_gradcam
+            if compute_gradcam and model_wrapper.model_type != 'onnx':
+                explainable_visualizer.run_gradcam_visualization(
+                    model_wrapper.model, images, image_ids, class_labels
+                )
+            gradcam_count += 1
             
-        # Run LRP visualization
-        if config.show_lrp and model_wrapper.model_type != 'onnx':
-            explainable_visualizer.run_lrp_visualization(
-                model_wrapper.model, images, image_ids, model_wrapper.multi_view
-            )
+            # Attention visualization
+            if config.show_attention and attentions is not None:
+                explainable_visualizer.run_attention_visualization(
+                    attentions, images, image_ids, model_wrapper.config,
+                    config.attention_threshold, config.save_heads, config.compute_rollout
+                )
+            
+            # LRP visualization
+            if config.show_lrp and model_wrapper.model_type != 'onnx':
+                explainable_visualizer.run_lrp_visualization(
+                    model_wrapper.model, images, image_ids, model_wrapper.multi_view
+                )
+            
+            # Clear CUDA cache after visualizations
+            if accelerator.device.type == 'cuda':
+                torch.cuda.empty_cache()
+            
+            # Log visualization outputs 
+            explainable_visualizer.log_visualization_outputs()
         
         # Process results
         evaluation_processor.add_batch_results(image_ids, targets, logits)
     
     # Save results and compute metrics
     evaluation_processor.process_and_save_results()
-    explainable_visualizer.log_visualization_outputs()
 
 def main():
     """Main function"""
@@ -201,52 +308,14 @@ def main():
     repo = MODEL_REPOS[config.model]
     logger.info(f"Running inference with multi_view={config.multi_view}")
     
-    # Load data configuration
-    data_cfg = yaml.safe_load(open(os.path.join(CURR_DIR, "../configs/data_config.yaml")))
-    data_root_folder = data_cfg.get(config.data, {}).get("data_root_folder", None)
-    if data_root_folder is None:
-        raise ValueError(f"Data root folder is None for {config.data}. Please check data_config.yaml")
-
-    # Setup paths
-    checkpoint_dir = os.path.join(CURR_DIR, "../..", config.model_path)
-    _, test_transforms = get_transforms(repo)
-
-    # Create data loader
-    test_ds = RadImageClassificationDataset(data_root_folder, "test", config.task, 
-                                           transform=test_transforms, multi_view=config.multi_view)
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=config.batch_size,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=False,
-        drop_last=False,
-        collate_fn=collate_fn,
-        persistent_workers=False
-    )
-    test_loader = accelerator.prepare(test_loader)
+    # Setup data loader and dataset
+    test_dataset, test_loader = setup_data_loader(config, repo, accelerator)
     
-    # Determine class labels and number of classes
-    if config.task == "binary":
-        class_labels = None
-        num_classes = 1
-    elif config.task == "multiclass":
-        class_labels = list((set(test_ds.labels)))
-        num_classes = len(class_labels)
-    else:
-        class_labels = test_ds.labels
-        num_classes = len(class_labels)
+    # Determine class information for model setup
+    class_labels, num_classes = determine_class_info(config, test_dataset)
     
-    # Load model
-    model_wrapper = load_model(checkpoint_dir, repo, num_classes, accelerator, 
-                              config.show_gradcam, config.show_lrp, config.multi_view, config.fusion_type,
-                              model_type=config.model)
-
-    # Validate ONNX multi-view compatibility
-    if config.multi_view and model_wrapper.model_type == 'onnx':
-        onnx_input_shape = model_wrapper.session.get_inputs()[0].shape
-        if len(onnx_input_shape) != 5 or onnx_input_shape[1] != 4:
-            raise ValueError("Multi-view inference requested but ONNX model was exported for single-view. Please export the ONNX model with multi-view support.")
+    # Setup model and validation
+    model_wrapper = setup_model(config, repo, num_classes, accelerator)
 
     # Setup output directories
     modelname = config.model_path.rsplit('/', 1)[-1]
@@ -254,7 +323,7 @@ def main():
     if accelerator.is_main_process:
         os.makedirs(output_path, exist_ok=True)
     
-    output_paths = create_output_directories(output_path, accelerator)
+    output_paths = create_output_directories(output_path, accelerator, config)
     
     # Run inference
     run_inference(

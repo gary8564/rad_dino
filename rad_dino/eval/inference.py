@@ -14,7 +14,8 @@ from transformers import AutoModel, AutoImageProcessor
 import logging
 from typing import Optional, List, Dict, Any, Tuple, Union
 from rad_dino.data.dataset import RadImageClassificationDataset
-from rad_dino.utils.data_utils import get_transforms, collate_fn
+from rad_dino.utils.data_utils import collate_fn
+from rad_dino.utils.transforms import get_transforms
 from rad_dino.utils.visualization.visualize_gradcam import visualize_gradcam
 from rad_dino.utils.metrics.compute_metrics import compute_evaluation_metrics
 from rad_dino.utils.visualization.visualize_attention import visualize_attention_maps
@@ -258,22 +259,36 @@ def _validate_onnx_shape(onnx_input_shape: Tuple, multi_view: bool, backbone_con
         if len(onnx_input_shape) != 4:
             raise ValueError(f"ONNX model input shape {onnx_input_shape} doesn't match expected single-view shape {expected_shape}")
 
-def create_output_directories(output_dir: str, accelerator: Accelerator) -> OutputPaths:
+def create_output_directories(output_dir: str, accelerator: Accelerator, config: InferenceConfig) -> OutputPaths:
     """Create output directories and return paths"""
     if accelerator.is_main_process:
         os.makedirs(f"{output_dir}/figs", exist_ok=True)
         os.makedirs(f"{output_dir}/table", exist_ok=True)
-        os.makedirs(f"{output_dir}/gradcam", exist_ok=True)
-        os.makedirs(f"{output_dir}/attention", exist_ok=True)
-        os.makedirs(f"{output_dir}/lrp", exist_ok=True)
+        
+        # Only create visualization directories if needed
+        gradcam_path = None
+        attention_path = None
+        lrp_path = None
+        
+        if config.show_gradcam:
+            os.makedirs(f"{output_dir}/gradcam", exist_ok=True)
+            gradcam_path = f"{output_dir}/gradcam"
+            
+        if config.show_attention:
+            os.makedirs(f"{output_dir}/attention", exist_ok=True)
+            attention_path = f"{output_dir}/attention"
+            
+        if config.show_lrp:
+            os.makedirs(f"{output_dir}/lrp", exist_ok=True)
+            lrp_path = f"{output_dir}/lrp"
     
     return OutputPaths(
         base=output_dir,
         figs=f"{output_dir}/figs",
         table=f"{output_dir}/table",
-        gradcam=f"{output_dir}/gradcam",
-        attention=f"{output_dir}/attention",
-        lrp=f"{output_dir}/lrp"
+        gradcam=gradcam_path,
+        attention=attention_path,
+        lrp=lrp_path
     )
 
 def get_args_parser() -> argparse.ArgumentParser:
@@ -443,7 +458,9 @@ def run_inference(model_wrapper: ModelWrapper, loader: DataLoader,
         logger.info(f"Running inference with PyTorch model (multi_view={multi_view})")
     
     for batch in tqdm(loader, desc="Inference", disable=not accelerator.is_main_process):
-        images, targets, image_ids = batch
+        images = batch["pixel_values"]
+        targets = batch["labels"]
+        image_ids = batch["sample_ids"]
         images = images.to(accelerator.device)
         
         # Validate input shapes
@@ -648,7 +665,7 @@ def main():
     if accelerator.is_main_process:
         os.makedirs(output_path, exist_ok=True)
     
-    output_paths = create_output_directories(output_path, accelerator)
+    output_paths = create_output_directories(output_path, accelerator, config)
     
     # Run inference
     run_inference(

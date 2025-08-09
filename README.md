@@ -50,9 +50,9 @@ Before running the training scripts, the configurations of parsing arguments nee
 
 - `--resume`: whether or not to resume the training from saved checkpoints.
 
-- `--resume-checkpoint-path`: defines the targeted checkpoint folder path for continual training.
+- `--resume-checkpoint-dir`: directory containing the checkpoint(s) to continue training from. The trainer expects a `best.pt` file inside this directory (or inside each `fold_X` subdirectory for k-fold).
 
-- `--output-dir`: specifies the saved checkpoint path.
+- `--output-dir`: specifies the base directory where new checkpoints will be written when not resuming.
 
 Additionally, the configurations such as training hyperparameters and saved location of custom datasets can be specified in `rad_dino/configs/data_config.yaml` and `rad_dino/configs/train_config.yaml`, respectively. 
 

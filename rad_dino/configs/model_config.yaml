@@ -1,0 +1,44 @@
+# Model configurations for image preprocessing
+# Each model has specific crop_size, size, normalization parameters, and interpolation settings. 
+# If there is a HuggingFace repository name for the model, it can be optionally added in the hf_repo field.
+# Add more models as needed
+# Example:
+# efficientnet:
+#   crop_size: [224, 224]
+#   size: 256
+#   image_mean: [0.485, 0.456, 0.406]
+#   image_std: [0.229, 0.224, 0.225]
+#   interpolation: 3 
+#   hf_repo: "google/efficientnet-b0"
+
+dinov2:
+  crop_size: [224, 224]
+  size: 256
+  image_mean: [0.485, 0.456, 0.406]
+  image_std: [0.229, 0.224, 0.225]
+  interpolation: 3  # BICUBIC
+  hf_repo: "facebook/dinov2-base"
+
+rad-dino:
+  crop_size: [518, 518]
+  size: 518
+  image_mean: [0.5307, 0.5307, 0.5307]
+  image_std: [0.2583, 0.2583, 0.2583]
+  interpolation: 3  # BICUBIC
+  hf_repo: "microsoft/rad-dino"
+
+medsiglip:
+  crop_size: [448, 448]
+  size: 448
+  image_mean: [0.5, 0.5, 0.5]
+  image_std: [0.5, 0.5, 0.5]
+  interpolation: 3  # BICUBIC
+  hf_repo: "google/medsiglip-448"
+
+ark:
+  crop_size: [768, 768]
+  size: 768
+  image_mean: [0.485, 0.456, 0.406]
+  image_std: [0.229, 0.224, 0.225]
+  interpolation: 3  # BICUBIC
+

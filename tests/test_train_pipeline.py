@@ -57,7 +57,7 @@ def get_trainer(model=None, args=None, accelerator=None):
     args = args or MagicMock(
         task="multilabel", data="VinDr-CXR", model="rad_dino",
         unfreeze_backbone=False, progressive_unfreeze=False, resume=False,
-        output_dir=tempfile.mkdtemp())
+        output_dir=tempfile.mkdtemp(dir="/tmp"))
     
     train_config = MagicMock()
     train_config.optim.base_lr = 0.001
@@ -80,7 +80,7 @@ def get_trainer(model=None, args=None, accelerator=None):
     return Trainer(
         model=model or DummyModel(), criterion=nn.BCEWithLogitsLoss(),
         eval_metrics=eval_metrics, train_config=train_config,
-        accelerator=accelerator, checkpoint_dir=tempfile.mkdtemp(), args=args
+        accelerator=accelerator, checkpoint_dir=tempfile.mkdtemp(dir="/tmp"), args=args
     )
 
 # --- Test Classes ---
@@ -289,7 +289,7 @@ class TestNewModels(unittest.TestCase):
         self.args = MagicMock(
             task="multilabel", data="VinDr-CXR", model="rad_dino",
             unfreeze_backbone=False, progressive_unfreeze=False, resume=False,
-            output_dir=tempfile.mkdtemp()
+            output_dir=tempfile.mkdtemp(dir="/tmp")
         )
         
     def tearDown(self):

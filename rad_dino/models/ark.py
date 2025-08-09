@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-from typing import Callable, Optional
+from typing import Callable, Optional, List, Tuple
 import timm.models.swin_transformer as swin
 import timm
 from rad_dino.loggings.setup import init_logging
@@ -11,6 +11,86 @@ logger = logging.getLogger(__name__)
 
 TIMM_VERSION = timm.__version__
 
+class WindowAttention(swin.WindowAttention):
+    """
+    Modified version of the original WindowAttention from timm that can return attention maps.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.return_attention = False
+        self.attention_maps = []
+    
+    def forward(self, x, mask=None):
+        """
+        Forward pass with optional attention map return.
+        
+        Args:
+            x: Input tensor
+            mask: Attention mask
+            
+        Returns:
+            Output tensor and attention maps if return_attention=True
+        """
+        B_, N, C = x.shape
+        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
+        
+        q = q * self.scale
+        attn = (q @ k.transpose(-2, -1))
+        
+        if mask is not None:
+            nW = mask.shape[0]
+            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+            attn = attn.view(-1, self.num_heads, N, N)
+            attn = self.softmax(attn)
+        else:
+            attn = self.softmax(attn)
+        
+        attn = self.attn_drop(attn)
+        
+        # Store attention maps if requested
+        if self.return_attention:
+            self.attention_maps.append(attn.detach())
+        
+        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+    
+    def get_attention_maps(self):
+        """Get stored attention maps and clear the list."""
+        maps = self.attention_maps.copy()
+        self.attention_maps.clear()
+        return maps
+
+class SwinTransformerBlock(swin.SwinTransformerBlock):
+    """
+    SwinTransformerBlock that uses custom WindowAttention that can return attention maps.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Replace the attention module with our custom one
+        if hasattr(self, 'attn') and isinstance(self.attn, swin.WindowAttention):
+            # Create a new WindowAttention with the same parameters
+            old_attn = self.attn
+            self.attn = WindowAttention(
+                dim=old_attn.qkv.in_features,
+                window_size=old_attn.window_size,
+                num_heads=old_attn.num_heads,
+                qkv_bias=old_attn.qkv.bias is not None,
+                attn_drop=old_attn.attn_drop.p,
+                proj_drop=old_attn.proj_drop.p
+            )
+            # Copy weights
+            self.attn.qkv.weight.data = old_attn.qkv.weight.data
+            if old_attn.qkv.bias is not None:
+                self.attn.qkv.bias.data = old_attn.qkv.bias.data
+            self.attn.proj.weight.data = old_attn.proj.weight.data
+            if old_attn.proj.bias is not None:
+                self.attn.proj.bias.data = old_attn.proj.bias.data
+                
 class SwinTransformer(swin.SwinTransformer):
     def __init__(self, 
                  num_classes_list: list[int],
@@ -21,9 +101,10 @@ class SwinTransformer(swin.SwinTransformer):
                  depths: tuple = (2, 2, 18, 2),
                  num_heads: tuple = (6, 12, 24, 48),
                  projector_features: int = 1376,
-                 use_mlp: bool = False):
+                 use_mlp: bool = False,
+                 return_attention: bool = False):
         """
-        Initialize Swin Transformer for Ark.
+        Initialize Swin Transformer for Ark with attention map support.
         
         Args:
             num_classes_list: List of number of output classes for each pretrained classification task
@@ -35,6 +116,7 @@ class SwinTransformer(swin.SwinTransformer):
             num_heads: Number of attention heads in each stage
             projector_features: Dimension for projector (if None, no projector)
             use_mlp: Whether to use MLP projector
+            return_attention: Whether to return attention maps
         """
         super().__init__(
             num_classes=0,  # Handle classification separately
@@ -47,6 +129,7 @@ class SwinTransformer(swin.SwinTransformer):
         )
         assert num_classes_list is not None
         self.num_classes_list = num_classes_list
+        self.return_attention = return_attention
         
         # Initialize projector
         self.encoder_features = self.num_features
@@ -65,9 +148,47 @@ class SwinTransformer(swin.SwinTransformer):
         for num_classes in self.num_classes_list:
             self.omni_heads.append(nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity())
         self.omni_heads = nn.ModuleList(self.omni_heads)
+        
+        # Replace all transformer blocks with attention-enabled versions
+        if self.return_attention:
+            self._replace_attention_blocks()
+    
+    def _replace_attention_blocks(self):
+        """Replace all transformer blocks with attention-enabled versions."""
+        for stage in self.layers:
+            for i, block in enumerate(stage.blocks):
+                # Get input resolution from the block
+                input_resolution = block.input_resolution
+                
+                # Create new block with attention maps
+                new_block = SwinTransformerBlock(
+                    dim=block.norm1.normalized_shape[0],
+                    input_resolution=input_resolution,
+                    num_heads=block.attn.num_heads,
+                    window_size=block.attn.window_size,
+                    shift_size=block.shift_size,
+                    mlp_ratio=block.mlp_ratio,
+                    qkv_bias=block.attn.qkv.bias is not None,
+                    attn_drop=block.attn.attn_drop.p,
+                    proj_drop=block.attn.proj_drop.p,
+                    drop_path=block.drop_path2.p if hasattr(block.drop_path2, 'p') else 0.0,
+                    norm_layer=type(block.norm1)
+                )
+                # Copy weights
+                new_block.load_state_dict(block.state_dict())
+                # Enable attention map collection
+                new_block.attn.return_attention = True
+                stage.blocks[i] = new_block
     
     def forward_features(self, x):
-        """Extract features from the backbone."""
+        """Extract features from the backbone with optional attention maps."""
+        if self.return_attention:
+            # Clear previous attention maps
+            for stage in self.layers:
+                for block in stage.blocks:
+                    if hasattr(block.attn, 'attention_maps'):
+                        block.attn.attention_maps.clear()
+        
         x = super().forward_features(x)
         
         # Handle compatibility between timm v0.5.4 and latest version
@@ -86,25 +207,54 @@ class SwinTransformer(swin.SwinTransformer):
         
         return x
     
-        
-        
-        
-    
-    def forward(self, x, head_n=None):
+    def forward(self, x, head_n: Optional[int] = None):
         """Forward pass through the model."""
         x = self.forward_features(x)
         x = self.projector(x)
+        
         if head_n is not None:
-            return x, self.omni_heads[head_n](x)
+            if self.return_attention:
+                attention_maps = self._collect_attention_maps()
+                return self.omni_heads[head_n](x), attention_maps
+            else:
+                return self.omni_heads[head_n](x)
         else:
-            return [head(x) for head in self.omni_heads]
+            outputs = [head(x) for head in self.omni_heads]
+            if self.return_attention:
+                attention_maps = self._collect_attention_maps()
+                return outputs, attention_maps
+            else:
+                return outputs
+    
+    def _collect_attention_maps(self):
+        """Collect attention maps from all transformer blocks."""
+        attention_maps = []
+        for stage in self.layers:
+            for block in stage.blocks:
+                if hasattr(block.attn, 'attention_maps'):
+                    attention_maps.extend(block.attn.attention_maps)
+        return attention_maps
     
     def generate_embeddings(self, x, after_proj: bool = True):
-        """Generate embeddings for downstream tasks."""
+        """
+        Generate embeddings for downstream tasks.
+        
+        Args:
+            x: Input tensor
+            after_proj: Whether to apply projection after feature extraction
+            
+        Returns:
+            (embeddings, attention_maps) - attention_maps is empty list if return_attention=False
+        """
         x = self.forward_features(x)
         if after_proj:
             x = self.projector(x)
-        return x
+        
+        if self.return_attention:
+            attention_maps = self._collect_attention_maps()
+            return x, attention_maps
+        else:
+            return x, []
     
     def get_feature_dimension(self, after_proj: bool = True) -> int:
         """
@@ -235,16 +385,16 @@ class ArkClassifier(nn.Module):
     
     def _init_strategy_dictionaries(self, view_fusion_type: str | None):
         """Initialize strategy dictionaries for branch-free dispatch in the forward pass."""
-        # Feature extraction strategies (use_backbone_projector -> strategy)
-        self.feature_extraction_strategies = {
-            True: self._extract_features_with_projection,
-            False: self._extract_features_without_projection
-        }
-        
         # Input reshape strategies (multi_view -> strategy)
         self.input_reshape_strategies = {
             True: self._multi_view_input_reshape,
             False: self._single_view_input_reshape
+        }
+        
+        # Attention reshape strategies (multi_view -> strategy)
+        self.attention_reshape_strategies = {
+            True: self._multi_view_attention_reshape,
+            False: self._single_view_attention_reshape
         }
         
         # Normalization strategies (multi_view -> strategy)
@@ -259,14 +409,6 @@ class ArkClassifier(nn.Module):
             "weighted_mean": self._weighted_mean_fusion,
             "mlp_adapter": self._mlp_adapter_fusion
         }
-
-    def _extract_features_with_projection(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features with projection applied."""
-        return self.backbone.generate_embeddings(x, after_proj=True)
-    
-    def _extract_features_without_projection(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features without projection."""
-        return self.backbone.generate_embeddings(x, after_proj=False)
     
     def _single_view_input_reshape(self, x: torch.Tensor) -> tuple[torch.Tensor, int]:
         """Reshape input for single view processing."""
@@ -282,6 +424,46 @@ class ArkClassifier(nn.Module):
         # Reshape to [batch_size * num_views, channels, height, width]
         x = x.view(batch_size * num_views, *x.shape[2:])
         return x, batch_size
+    
+    def _single_view_attention_reshape(self, attention_maps: List[torch.Tensor], batch_size: int, num_views: int) -> torch.Tensor:
+        """
+        Single view attention reshaping strategy.
+        
+        Args:
+            attention_maps: List of attention maps from all layers
+            batch_size: Batch size
+            num_views: Number of views (always 1 for single view)
+            
+        Returns:
+            List of attention maps (since they have different sizes)
+        """
+        # Return as list since attention maps have different sizes across layers
+        return attention_maps
+    
+    def _multi_view_attention_reshape(self, attention_maps: List[torch.Tensor], batch_size: int, num_views: int) -> torch.Tensor:
+        """
+        Multi-view attention reshaping strategy.
+        
+        Args:
+            attention_maps: List of attention maps from all layers
+            batch_size: Batch size
+            num_views: Number of views
+            
+        Returns:
+            List of reshaped attention maps
+        """
+        # Reshape each attention map to include views dimension
+        reshaped_maps = []
+        for attn_map in attention_maps:
+            # attn_map shape: [B*V, N_heads, N_seq, N_seq]
+            # Calculate the actual batch size from the attention map
+            total_batch_size = attn_map.shape[0]
+            actual_batch_size = total_batch_size // num_views
+            
+            # Reshape to [B, V, N_heads, N_seq, N_seq]
+            reshaped = attn_map.reshape(actual_batch_size, num_views, *attn_map.shape[1:])
+            reshaped_maps.append(reshaped)
+        return reshaped_maps
     
     def _single_view_normalization(self, features: torch.Tensor) -> torch.Tensor:
         """Normalize features for single view processing."""
@@ -332,12 +514,17 @@ class ArkClassifier(nn.Module):
         Args:
             x: Input tensor of shape [batch_size, channels, height, width] for single view
                or [batch_size, num_views, channels, height, width] for multi-view
+               
+        Returns:
+            tuple: (logits, attention_maps)
+                - logits: Classification logits [B, num_classes]
+                - attention_maps: Attention maps from all transformer layers
         """
         # Reshape input
         x, batch_size = self.input_reshape_strategies[self.multi_view](x)
         
-        # Extract features from backbone
-        features = self.feature_extraction_strategies[self.use_backbone_projector](x)
+        # Extract features from backbone with attention maps
+        features, attention_maps = self.backbone.generate_embeddings(x, after_proj=self.use_backbone_projector)
         
         # Normalize features
         features = self.normalization_strategies[self.multi_view](features)
@@ -349,7 +536,10 @@ class ArkClassifier(nn.Module):
         # Apply classification head
         logits = self.classifier(features)
         
-        return logits
+        # Reshape attention maps
+        num_views = getattr(self, 'num_views', 1)
+        attention_maps = self.attention_reshape_strategies[self.multi_view](attention_maps, batch_size, num_views)
+        return logits, attention_maps
 
 
 def load_prtrained_ark_model(checkpoint_path: str, 
@@ -362,6 +552,7 @@ def load_prtrained_ark_model(checkpoint_path: str,
                    num_heads: tuple = (6, 12, 24, 48),
                    projector_features: int = 1376,
                    use_mlp: bool = False,
+                   return_attention: bool = False,
                    device: str = "cpu") -> SwinTransformer:
     """
     Load a pre-trained Ark model from checkpoint.
@@ -392,7 +583,8 @@ def load_prtrained_ark_model(checkpoint_path: str,
         depths=depths,
         num_heads=num_heads,
         projector_features=projector_features,
-        use_mlp=use_mlp
+        use_mlp=use_mlp,
+        return_attention=return_attention
     )
     
     # Load checkpoint
@@ -465,6 +657,7 @@ if __name__ == "__main__":
         num_heads=(6, 12, 24, 48),
         projector_features=1376,
         use_mlp=False,
+        return_attention=True,  # Enable attention maps
         device="cpu"
     )        
     
@@ -529,16 +722,22 @@ if __name__ == "__main__":
     # Test single-view forward pass
     dummy_input_single = torch.randn(2, 3, 768, 768)
     try:
-        logits_single = model_single(dummy_input_single)
+        logits_single, attention_maps_single = model_single(dummy_input_single)
         print(f"Single-view forward pass successful. Output shape: {logits_single.shape}")
+        print(f"Single-view attention maps: {len(attention_maps_single)} layers")
+        if attention_maps_single:
+            print(f"First attention map shape: {attention_maps_single[0].shape}")
     except Exception as e:
         raise RuntimeError(f"Single-view forward pass failed: {e}")
     
     # Test multi-view forward pass
     dummy_input_multi = torch.randn(2, 4, 3, 768, 768)  # [batch_size, num_views, channels, height, width]
     try:
-        logits_multi = model_multi_mean(dummy_input_multi)
+        logits_multi, attention_maps_multi = model_multi_mean(dummy_input_multi)
         print(f"Multi-view forward pass successful. Output shape: {logits_multi.shape}")
+        print(f"Multi-view attention maps: {len(attention_maps_multi)} layers")
+        if attention_maps_multi:
+            print(f"First attention map shape: {attention_maps_multi[0].shape}")
     except Exception as e:
         raise RuntimeError(f"Multi-view forward pass failed: {e}")
     

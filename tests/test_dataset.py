@@ -4,7 +4,6 @@ import os
 import pandas as pd
 import numpy as np
 import torch
-from unittest.mock import patch, MagicMock
 from torchvision import transforms
 import pydicom
 from pydicom.dataset import Dataset, FileDataset
@@ -32,7 +31,7 @@ def create_mock_dicom():
     ds.SeriesInstanceUID = generate_uid()
     
     # Create and add pixel data
-    pixel_array = np.random.randint(0, 255, (224, 224), dtype=np.uint8)
+    pixel_array = np.random.randint(0, 255, (1024, 1024), dtype=np.uint8)
     ds.Rows, ds.Columns = pixel_array.shape
     ds.PhotometricInterpretation = "MONOCHROME2"
     ds.SamplesPerPixel = 1
@@ -47,7 +46,7 @@ def create_mock_dicom():
 class TestRadImageClassificationDataset(unittest.TestCase):
     def setUp(self):
         """Set up test environment before each test."""
-        self.root = tempfile.mkdtemp()
+        self.root = tempfile.mkdtemp(dir="/tmp")
         os.makedirs(os.path.join(self.root, "images", "train"), exist_ok=True)
         
         # Create mock DICOM files for single-view
@@ -94,24 +93,26 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         """Test dataset initialization and basic functionality."""
         # Test invalid parameters
         with self.assertRaises(AttributeError):
-            RadImageClassificationDataset(self.root, split="invalid", task="binary")
+            RadImageClassificationDataset(self.root, split="invalid", task="binary", model_name="rad-dino")
         with self.assertRaises(AttributeError):
-            RadImageClassificationDataset(self.root, split="train", task="invalid_task")
+            RadImageClassificationDataset(self.root, split="train", task="invalid_task", model_name="rad-dino")
+        with self.assertRaises(AttributeError):
+            RadImageClassificationDataset(self.root, split="train", task="binary")  # No model_name when transform=None
 
         # Test binary classification
         self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
-        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", target_size=(224, 224))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", model_name="rad-dino")
         self.assertEqual(len(dataset), 5)
         img, target, img_id = dataset[0]
         self.assertIsInstance(img, torch.Tensor)
         self.assertIsInstance(target, torch.Tensor)
-        self.assertEqual(img.shape, (3, 224, 224))  # 3 channels due to repeat
+        self.assertEqual(img.shape, (3, 518, 518))
         self.assertEqual(target.shape, ())  # Scalar tensor for binary classification
         self.assertTrue(torch.all((target == 0) | (target == 1)))
 
         # Test multilabel classification
         self.multilabel_train.to_csv(os.path.join(self.root, "train_labels.csv"))
-        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", target_size=(224, 224))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", model_name="rad-dino")
         img, target, img_id = dataset[0]
         self.assertEqual(target.shape, (2,))
 
@@ -120,7 +121,7 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         # Test multi-view multilabel classification
         self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
         dataset = RadImageClassificationDataset(
-            self.root, split="train", task="multilabel", multi_view=True, target_size=(224, 224)
+            self.root, split="train", task="multilabel", multi_view=True, model_name="rad-dino"
         )
         
         self.assertEqual(len(dataset), 2)  # 2 studies
@@ -128,15 +129,14 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         # Test multi-view data loading
         img, target, study_id = dataset[0]
         self.assertIsInstance(img, torch.Tensor)
-        self.assertEqual(img.shape, (4, 3, 224, 224))  # 4 views, 3 channels, H, W
+        self.assertEqual(img.shape, (4, 3, 518, 518))
         self.assertEqual(target.shape, (2,))  # 2 labels
         self.assertIn(study_id, ["study0", "study1"])
         
         # Test that all 4 views are loaded
         for view_idx in range(4):
             view_img = img[view_idx]
-            self.assertEqual(view_img.shape, (3, 224, 224))
-            self.assertTrue(torch.all(view_img >= 0) and torch.all(view_img <= 255))
+            self.assertEqual(view_img.shape, (3, 518, 518))
 
     def test_multi_view_with_transforms(self):
         """Test multi-view dataset with transforms."""
@@ -156,6 +156,7 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         
         img, target, study_id = dataset[0]
         self.assertIsInstance(img, torch.Tensor)
+        # When transforms are applied, we expect the exact shape from transforms
         self.assertEqual(img.shape, (4, 3, 224, 224))
         self.assertEqual(target.shape, (2,))
 
@@ -170,13 +171,13 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         multiclass_train.to_csv(os.path.join(self.root, "train_labels.csv"))
         
         dataset = RadImageClassificationDataset(
-            self.root, split="train", task="multiclass", transform=None, target_size=(224, 224)
+            self.root, split="train", task="multiclass", model_name="rad-dino"
         )
         
         self.assertEqual(len(dataset), 5)
         img, target, img_id = dataset[0]
         self.assertIsInstance(img, torch.Tensor)
-        self.assertEqual(img.shape, (3, 224, 224))
+        self.assertEqual(img.shape, (3, 518, 518))
         self.assertEqual(target.shape, ())  # Scalar tensor for multiclass classification
         self.assertTrue(torch.all((target >= 0) & (target <= 4)))  # BIRAD 0-4
 
@@ -192,13 +193,13 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         
         dataset = RadImageClassificationDataset(
             self.root, split="train", task="multiclass",
-            transform=None, multi_view=True, target_size=(224, 224)
+            model_name="rad-dino", multi_view=True
         )
         
         self.assertEqual(len(dataset), 2)
         img, target, study_id = dataset[0]
         self.assertIsInstance(img, torch.Tensor)
-        self.assertEqual(img.shape, (4, 3, 224, 224))
+        self.assertEqual(img.shape, (4, 3, 518, 518))
         self.assertEqual(target.shape, ())  # Scalar tensor for multiclass classification
 
     def test_transforms(self):
@@ -218,6 +219,33 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         self.assertIsInstance(img, torch.Tensor)
         self.assertEqual(img.shape, (3, 224, 224))
 
+    def test_model_name_and_transform_warning(self):
+        """Test that a warning is issued when both model_name and transform are specified."""
+        self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
+        
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Grayscale(num_output_channels=3),
+            transforms.Resize((224, 224)),
+            transforms.ToTensor()
+        ])
+        
+        # This should issue a warning but not raise an error
+        with self.assertLogs(level='WARNING') as log:
+            dataset = RadImageClassificationDataset(
+                self.root, split="train", task="binary", 
+                transform=transform, model_name="rad-dino"
+            )
+        
+        # Check that the warning was logged
+        self.assertTrue(any("model_name" in record.message for record in log.records))
+        
+        # Should still work correctly
+        self.assertEqual(len(dataset), 5)
+        img, target, img_id = dataset[0]
+        self.assertIsInstance(img, torch.Tensor)
+        self.assertEqual(img.shape, (3, 224, 224))  # Transform should take priority
+
     def test_multi_view_missing_files(self):
         """Test that multi-view dataset raises error for missing view files."""
         self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
@@ -226,7 +254,7 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         os.remove(os.path.join(self.root, "images", "train", "study0", "L_CC.dcm"))
     
         dataset = RadImageClassificationDataset(
-            self.root, split="train", task="multilabel", multi_view=True, target_size=(224, 224)
+            self.root, split="train", task="multilabel", multi_view=True, model_name="rad-dino"
         )
         
         with self.assertRaises(FileNotFoundError):
@@ -235,32 +263,32 @@ class TestRadImageClassificationDataset(unittest.TestCase):
     def test_dataset_labels_property(self):
         """Test that dataset correctly exposes labels property."""
         self.multilabel_train.to_csv(os.path.join(self.root, "train_labels.csv"))
-        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", target_size=(224, 224))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", model_name="rad-dino")
         self.assertEqual(dataset.labels, ["label1", "label2"])
 
     def test_dataset_len(self):
         """Test dataset length for different configurations."""
         # Single-view dataset
         self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
-        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", target_size=(224, 224))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", model_name="rad-dino")
         self.assertEqual(len(dataset), 5)
         
         # Multi-view dataset
         self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
-        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", multi_view=True, target_size=(224, 224))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="multilabel", multi_view=True, model_name="rad-dino")
         self.assertEqual(len(dataset), 2)
 
     def test_dataset_getitem_consistency(self):
         """Test that dataset returns consistent data types and shapes."""
         self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
-        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", target_size=(224, 224))
+        dataset = RadImageClassificationDataset(self.root, split="train", task="binary", model_name="rad-dino")
         
         # Test consistency across multiple calls
         for i in range(len(dataset)):
             img, target, img_id = dataset[i]
             self.assertIsInstance(img, torch.Tensor)
             self.assertIsInstance(target, torch.Tensor)
-            self.assertEqual(img.shape, (3, 224, 224))
+            self.assertEqual(img.shape, (3, 518, 518))
             self.assertEqual(target.shape, ())  # Scalar tensor for binary classification
             self.assertIsInstance(img_id, str)
 

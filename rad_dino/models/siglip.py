@@ -119,6 +119,12 @@ class MedSigClassifier(nn.Module):
             False: self._single_view_input_reshape
         }
         
+        # Attention reshape strategies (multi_view -> strategy)
+        self.attention_reshape_strategies = {
+            True: self._multi_view_attention_reshape,
+            False: self._single_view_attention_reshape
+        }
+        
         # Normalization strategies (multi_view -> strategy)
         self.normalization_strategies = {
             True: self._multi_view_normalization,
@@ -160,6 +166,34 @@ class MedSigClassifier(nn.Module):
         # Reshape: [B, V, C, H, W] -> [B*V, C, H, W]
         pixel_values_reshaped = pixel_values.reshape(batch_size * num_views, pixel_values.shape[2], pixel_values.shape[3], pixel_values.shape[4])
         return pixel_values_reshaped, num_views
+    
+    def _single_view_attention_reshape(self, stacked_attns: torch.Tensor, batch_size: int, num_views: int) -> torch.Tensor:
+        """
+        Single view attention reshaping strategy.
+        
+        Args:
+            stacked_attns: Attention maps [L, B, N_heads, N_seq, N_seq]
+            batch_size: Batch size
+            num_views: Number of views (always 1)
+            
+        Returns:
+            Unmodified attention maps
+        """
+        return stacked_attns
+    
+    def _multi_view_attention_reshape(self, stacked_attns: torch.Tensor, batch_size: int, num_views: int) -> torch.Tensor:
+        """
+        Multi-view attention reshaping strategy.
+        
+        Args:
+            stacked_attns: Attention maps [L, B*V, N_heads, N_seq, N_seq]
+            batch_size: Batch size
+            num_views: Number of views
+            
+        Returns:
+            Reshaped attention maps [L, B, V, N_heads, N_seq, N_seq]
+        """
+        return stacked_attns.reshape(-1, batch_size, num_views, *stacked_attns.shape[2:])
     
     def _single_view_normalization(self, features: torch.Tensor) -> torch.Tensor:
         """
@@ -277,7 +311,9 @@ class MedSigClassifier(nn.Module):
             pixel_values: Input tensor, either single-view or multi-view
             
         Returns:
-            logits: Classification logits [B, num_classes]
+            tuple: (logits, attention_maps)
+                - logits: Classification logits [B, num_classes]
+                - attention_maps: Attention maps from all transformer layers
         """
         # Validate input matches model configuration
         if len(pixel_values.shape) == 5 and not self.multi_view:
@@ -290,9 +326,15 @@ class MedSigClassifier(nn.Module):
         # Apply input reshaping strategy
         pixel_values_reshaped, num_views = self.input_reshape_strategies[self.multi_view](pixel_values)
         
-        # Process through backbone
-        outputs = self.backbone.get_image_features(pixel_values=pixel_values_reshaped)
-        features = outputs / outputs.norm(dim=-1, keepdim=True) 
+        # Process through vision model with attention maps
+        vision_outputs = self.backbone.vision_model(
+            pixel_values=pixel_values_reshaped,
+            output_attentions=True,
+            return_dict=True
+        )
+        
+        # Extract features and normalize
+        features = vision_outputs.pooler_output / vision_outputs.pooler_output.norm(dim=-1, keepdim=True)
         
         # Apply view fusion strategy
         fusion_strategy = self.view_fusion_strategies.get(getattr(self, 'view_fusion_type', None), self._single_view_fusion)
@@ -304,7 +346,12 @@ class MedSigClassifier(nn.Module):
         # Classification
         logits = self.head(fused_features)
         
-        return logits
+        # Handle attention maps
+        attentions = vision_outputs.attentions
+        stacked_attns = torch.stack(attentions, dim=0)
+        stacked_attns = self.attention_reshape_strategies[self.multi_view](stacked_attns, batch_size, num_views)
+        
+        return logits, stacked_attns
 
 if __name__ == "__main__":
     import os
@@ -361,3 +408,14 @@ if __name__ == "__main__":
     total_trainable_params = sum(
         p.numel() for p in model_multi.parameters() if p.requires_grad)
     print(f"{total_trainable_params:,} training parameters.")
+    
+    # Test forward pass with attention maps
+    # Create dummy input for single-view
+    dummy_input_single = torch.randn(2, 3, 448, 448)  # [B, C, H, W]
+    logits_single, attns_single = model_single(dummy_input_single)
+    print(f"Single-view output shapes: logits {logits_single.shape}, attention maps {attns_single.shape}")
+    
+    # Create dummy input for multi-view
+    dummy_input_multi = torch.randn(2, 4, 3, 448, 448)  # [B, V, C, H, W]
+    logits_multi, attns_multi = model_multi(dummy_input_multi)
+    print(f"Multi-view output shapes: logits {logits_multi.shape}, attention maps {attns_multi.shape}")

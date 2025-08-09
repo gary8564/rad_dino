@@ -96,6 +96,6 @@ class OutputPaths:
     base: str
     figs: str
     table: str
-    gradcam: str
-    attention: str
-    lrp: str
+    gradcam: Optional[str] = None
+    attention: Optional[str] = None
+    lrp: Optional[str] = None

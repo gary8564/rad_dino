@@ -20,13 +20,19 @@ class TestMedSigClassifier(unittest.TestCase):
         self.mock_backbone.config.text_config = Mock()
         self.mock_backbone.config.text_config.projection_size = self.feat_dim
         
-        # Mock the get_image_features method to return proper tensor shapes
-        self.mock_backbone.get_image_features = Mock()
-        def mock_get_image_features(pixel_values):
+        # Mock the vision_model to return proper tensor shapes
+        self.mock_backbone.vision_model = Mock()
+        def mock_vision_model_forward(pixel_values, output_attentions=False, return_dict=False):
             # Return features with proper shape based on input
             batch_size = pixel_values.shape[0]
-            return torch.randn(batch_size, self.feat_dim)
-        self.mock_backbone.get_image_features.side_effect = mock_get_image_features
+            # Create a mock output with pooler_output and attentions
+            mock_output = Mock()
+            mock_output.pooler_output = torch.randn(batch_size, self.feat_dim)
+            if output_attentions:
+                # Create mock attention maps for 27 layers
+                mock_output.attentions = [torch.randn(batch_size, 16, 1024, 1024) for _ in range(27)]
+            return mock_output
+        self.mock_backbone.vision_model.side_effect = mock_vision_model_forward
         
     def test_medsig_classifier_initialization(self):
         """Test MedSigClassifier initialization."""
@@ -50,10 +56,11 @@ class TestMedSigClassifier(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 3, 224, 224)
-        output = model(x)
+        logits, attention_maps = model(x)
         
-        self.assertEqual(output.shape, (self.batch_size, self.num_classes))
-        self.mock_backbone.get_image_features.assert_called_once()
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(attention_maps.shape, (27, self.batch_size, 16, 1024, 1024))
+        self.mock_backbone.vision_model.assert_called_once()
         
     def test_medsig_classifier_multi_view_initialization(self):
         """Test MedSigClassifier initialization with multi-view."""
@@ -82,11 +89,12 @@ class TestMedSigClassifier(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)  # [batch, views, channels, height, width]
-        output = model(x)
+        logits, attention_maps = model(x)
         
-        self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(attention_maps.shape, (27, self.batch_size, 4, 16, 1024, 1024))
         # Should be called once with reshaped input (batch_size * num_views)
-        self.mock_backbone.get_image_features.assert_called_once()
+        self.mock_backbone.vision_model.assert_called_once()
         
     def test_medsig_classifier_weighted_mean_fusion(self):
         """Test MedSigClassifier with weighted mean fusion."""
@@ -99,9 +107,10 @@ class TestMedSigClassifier(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)
-        output = model(x)
+        logits, attention_maps = model(x)
         
-        self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(attention_maps.shape, (27, self.batch_size, 4, 16, 1024, 1024))
         self.assertEqual(model.view_fusion_type, "weighted_mean")
         self.assertIsNotNone(model.view_scores)
         self.assertIsNotNone(model.fusion_layer)
@@ -119,9 +128,10 @@ class TestMedSigClassifier(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)
-        output = model(x)
+        logits, attention_maps = model(x)
         
-        self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(attention_maps.shape, (27, self.batch_size, 4, 16, 1024, 1024))
         self.assertEqual(model.view_fusion_type, "mlp_adapter")
         self.assertIsNotNone(model.view_adapters)
         self.assertIsNotNone(model.fusion_layer)
@@ -273,12 +283,18 @@ class TestMedSigClassifierIntegration(unittest.TestCase):
         self.mock_backbone.config.text_config = Mock()
         self.mock_backbone.config.text_config.projection_size = self.feat_dim
         
-        # Mock the get_image_features method
-        self.mock_backbone.get_image_features = Mock()
-        def mock_get_image_features(pixel_values):
+        # Mock the vision_model
+        self.mock_backbone.vision_model = Mock()
+        def mock_vision_model_forward(pixel_values, output_attentions=False, return_dict=False):
             batch_size = pixel_values.shape[0]
-            return torch.randn(batch_size, self.feat_dim)
-        self.mock_backbone.get_image_features.side_effect = mock_get_image_features
+            # Create a mock output with pooler_output and attentions
+            mock_output = Mock()
+            mock_output.pooler_output = torch.randn(batch_size, self.feat_dim)
+            if output_attentions:
+                # Create mock attention maps for 27 layers
+                mock_output.attentions = [torch.randn(batch_size, 16, 1024, 1024) for _ in range(27)]
+            return mock_output
+        self.mock_backbone.vision_model.side_effect = mock_vision_model_forward
         
     def test_medsig_classifier_full_pipeline_single_view(self):
         """Test complete MedSigClassifier pipeline for single view."""
@@ -289,10 +305,11 @@ class TestMedSigClassifierIntegration(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 3, 224, 224)
-        output = model(x)
+        logits, attention_maps = model(x)
         
-        self.assertEqual(output.shape, (self.batch_size, self.num_classes))
-        self.mock_backbone.get_image_features.assert_called_once()
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(attention_maps.shape, (27, self.batch_size, 16, 1024, 1024))
+        self.mock_backbone.vision_model.assert_called_once()
         
     def test_medsig_classifier_full_pipeline_multi_view(self):
         """Test complete MedSigClassifier pipeline for multi-view."""
@@ -305,10 +322,11 @@ class TestMedSigClassifierIntegration(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)
-        output = model(x)
+        logits, attention_maps = model(x)
         
-        self.assertEqual(output.shape, (self.batch_size, self.num_classes))
-        self.mock_backbone.get_image_features.assert_called_once()
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertEqual(attention_maps.shape, (27, self.batch_size, 4, 16, 1024, 1024))
+        self.mock_backbone.vision_model.assert_called_once()
         
     def test_medsig_classifier_different_fusion_strategies(self):
         """Test MedSigClassifier with different fusion strategies."""
@@ -325,9 +343,10 @@ class TestMedSigClassifierIntegration(unittest.TestCase):
                 )
                 
                 x = torch.randn(self.batch_size, 4, 3, 224, 224)
-                output = model(x)
+                logits, attention_maps = model(x)
                 
-                self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+                self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+                self.assertEqual(attention_maps.shape, (27, self.batch_size, 4, 16, 1024, 1024))
                 self.assertEqual(model.view_fusion_type, fusion_type)
 
 

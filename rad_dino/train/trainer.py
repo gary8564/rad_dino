@@ -9,7 +9,7 @@ import wandb
 from torch.amp import autocast, GradScaler
 from transformers import get_cosine_schedule_with_warmup
 from rad_dino.train.train_utils import EarlyStopping
-from rad_dino.utils.data_utils import KFold
+from rad_dino.utils.cross_validation import KFold
 from rad_dino.loggings.setup import init_logging
 from rad_dino.train.model_registry import get_model_info, get_layer_term
 
@@ -189,7 +189,8 @@ class Trainer:
         for i, data in enumerate(tqdm(data_loader, desc=f"Epoch {curr_epoch + 1}")):
             # Backpropagate the loss and accumulate gradients
             with self.accelerator.accumulate(model):
-                images, labels, _ = data
+                images = data["pixel_values"]
+                labels = data["labels"]
                 
                 # Forward pass with mixed precision
                 with self.accelerator.autocast():
@@ -254,12 +255,13 @@ class Trainer:
         preds, trues = [], []
         with torch.no_grad():
             for data in data_loader:
-                images, labels, _ = data  
+                images = data["pixel_values"]
+                labels = data["labels"]
                 predictions, _ = model(images)
                 loss = self.criterion(predictions, labels)
                 local_val_loss += loss.item()
-                preds.append(predictions.detach()) 
-                trues.append(labels.detach())      
+                preds.append(predictions.detach())
+                trues.append(labels.detach())
         
         # compute local average loss
         avg_loss_local = local_val_loss / len(data_loader)
@@ -358,8 +360,11 @@ class Trainer:
         best_metric = -float("inf")
         start_epoch = 0
         
-        # Resume if checkpoint exists
-        if self.args.resume and os.path.exists(best_checkpoint):
+        # Resume if requested: always use best.pt inside the computed fold checkpoint dir
+        if self.args.resume:
+            if not os.path.exists(best_checkpoint):
+                raise RuntimeError(f"No checkpoint found to resume. Expected a 'best.pt' at: {best_checkpoint}")
+
             if self.accelerator.is_main_process:
                 ckpt = torch.load(best_checkpoint, map_location=self.accelerator.device)
                 model.load_state_dict(ckpt["model_state"])
@@ -368,8 +373,11 @@ class Trainer:
                     lr_scheduler.load_state_dict(ckpt["scheduler_state"])
                 best_metric = ckpt.get("best_metric", best_metric)
                 start_epoch = ckpt.get("epoch", 0)
-                logger.info(f"Fold {fold_idx if fold_idx > 0 else 'single'}: Resumed from epoch {start_epoch}, best_metric={best_metric:.4f}")
-            
+                logger.info(
+                    f"Fold {fold_idx if fold_idx > 0 else 'single'}: Resumed from epoch {start_epoch}, "
+                    f"best_metric={best_metric:.4f} from {best_checkpoint}"
+                )
+
             # Synchronize values across processes
             self.accelerator.wait_for_everyone()
             # Create tensors on each rank
@@ -378,8 +386,6 @@ class Trainer:
             # Reduce to get values from rank 0
             start_epoch = self.accelerator.reduce(start_epoch_tensor, reduction="mean").item()
             best_metric = self.accelerator.reduce(best_metric_tensor, reduction="mean").item()
-        elif self.args.resume:
-            raise RuntimeError(f"No checkpoint found at {best_checkpoint}. Cannot resume training.")
         
         return KFold(
             model, optimizer, lr_scheduler, fold_checkpoint_dir,
@@ -543,7 +549,7 @@ class Trainer:
                     logger.info(f"{log_prefix}Loaded best model checkpoint with AUPRC={ckpt.get('best_metric', 'N/A'):.4f}")
                 else:
                     # Fallback to current model if no checkpoint exists
-                    logger.warning(f"Failed to load best model checkpoint: {e}. Using current model instead.")
+                    logger.warning("No best model checkpoint found. Using current model instead.")
                     best_model = kfold.model
             
             # Track fold results

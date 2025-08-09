@@ -1,43 +1,60 @@
 import os
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
 import torchvision.transforms.v2 as transforms
 import numpy as np
-import cv2
-from typing import Optional
-from rad_dino.utils.preprocessing_utils import dicom2array
 import logging
+from transformers import AutoImageProcessor
+from typing import Optional, Callable
+from PIL import Image
+from torch.utils.data import Dataset
+from rad_dino.utils.preprocessing_utils import dicom2array
+from rad_dino.utils.config_utils import get_model_config
 from rad_dino.loggings.setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
+
+def load_image_processor(model_name: str) -> AutoImageProcessor:
+    """
+    Load the image processor for the given model.
+    """
+    config = get_model_config(model_name)
+    return AutoImageProcessor.from_pretrained(config["hf_repo"])
 
 class RadImageClassificationDataset(Dataset):
     def __init__(self,
                  path_root: str,
                  split: str,
                  task: str,
-                 transform: Optional[transforms.Compose] = None,
-                 target_size: Optional[tuple] = None,
+                 transform: Optional[Callable] = None,
+                 model_name: Optional[str] = None,
                  multi_view: bool = False):
         """
         path_root: root directory of the preprocessed dataset
         split: specify the data loader to be in "train" dataset or "test" dataset.
         task: specify the task of the dataset, either "binary", "multi-class", or "multi-label".
-        transform: torchvision transforms. By default, None.
+        transform: Any callable that maps an image to a tensor (e.g., torchvision `Compose`). By default, None.
+        model_name: name of the model. If None, the image processor will be loaded from the model config.
         multi_view: whether to load multi-view mammography data (4 images per study).
-        target_size: target size for resizing images when no transforms are applied (H, W). For DINOv2, (518, 518) is recommended.
         """
         if split not in ["train", "test"]:
             raise AttributeError(f"`split` attribute must be a str type and specified as either `train` or `test`.")
         if task not in ["binary", "multiclass", "multilabel"]:
             raise AttributeError(f"`task` attribute must be a str type and specified as either `binary`, `multiclass`, or `multilabel`.")
-        if target_size is None and transform is None:
-            raise AttributeError(f"`target_size` attribute must be specified when no transforms are applied.")
+        if model_name is None and transform is None:
+            raise AttributeError(f"`model_name` attribute must be specified when no transforms are applied.")
+        if model_name is not None and transform is not None:
+           logging.warning(f"""`model_name`(AutoImageProcessor) and `transform`(torchvision.transforms) attributes are specified at the same time. 
+                           `transform` has the priority over the `model_name`. AutoImageProcessor will be ignored.""")
+        
+        self.model_name = model_name
+        self.image_processor = None
+        # Only load image processor if transform is None
+        if transform is None:
+            self.image_processor = load_image_processor(model_name)
         self.path_root = path_root
         self.task = task
         self.multi_view = multi_view
-        self.target_size = target_size
         label_file = f"{split}_labels.csv"
         if not os.path.exists(os.path.join(self.path_root, label_file)):
             raise FileNotFoundError(f"No label file found in {self.path_root}.")
@@ -87,35 +104,29 @@ class RadImageClassificationDataset(Dataset):
                     transformed_images.append(transformed_image)
                 
                 # Stack transformed views: [4, C, H, W]
-                img = torch.stack(transformed_images, dim=0)
+                imgs = torch.stack(transformed_images, dim=0)
             else:
                 # If no data augmentation is applied
-                # Convert each image to tensor, resize to standard size, then repeat to rgb channels
-                transformed_images = []
-                
-                for view_img in images:  # [H, W]
-                    # Resize to target size using cv2
-                    view_resized = cv2.resize(view_img, self.target_size, interpolation=cv2.INTER_LINEAR)
-                    view_tensor = torch.from_numpy(view_resized).float()  # [H, W]
-                    # Repeat grayscale to rgb channels: [H, W] -> [3, H, W]
-                    view_tensor = view_tensor.unsqueeze(0).repeat(3, 1, 1)  # [3, H, W]
-                    transformed_images.append(view_tensor)
-                
-                # Stack views: [4, 3, H, W]
-                img = torch.stack(transformed_images, dim=0)
+                # Use AutoImageProcessor to process the images
+                pil_images = [Image.fromarray(img) for img in images]
+                imgs = self.image_processor(pil_images, return_tensors="pt")["pixel_values"]
+                # Remove batch dimension from AutoImageProcessor output
+                imgs = imgs.squeeze(0)  # [1, 4, C, H, W] -> [4, C, H, W]
         else:
             # Load single image
             dicom_file = os.path.join(self.dicom_root, f"{sample_id}.dcm")
             img = dicom2array(dicom_file)
 
             if self.transform:
-                img = self.transform(img)
+                imgs = self.transform(img)
             else:
-                # Resize to target size and convert to tensor
-                img_resized = cv2.resize(img, self.target_size, interpolation=cv2.INTER_LINEAR)
-                img = torch.from_numpy(img_resized).float()  # [H, W]
-                img = img.unsqueeze(0).repeat(3, 1, 1)  # [3, H, W]
-        return img, targets, sample_id
+                # If no data augmentation is applied
+                # Use AutoImageProcessor to process the images
+                pil_image = Image.fromarray(img)
+                imgs = self.image_processor(pil_image, return_tensors="pt")["pixel_values"]
+                # Remove batch dimension from AutoImageProcessor output
+                imgs = imgs.squeeze(0)  # [1, C, H, W] -> [C, H, W]
+        return imgs, targets, sample_id
     
     def _load_multi_view_images(self, study_id: str):
         """
@@ -150,16 +161,16 @@ class RadImageClassificationDataset(Dataset):
 
 if __name__ == "__main__":
     path_root = "/hpcwork/rwth1833/datasets/preprocessed/RSNA-Pneumonia"
-    ds_train = RadImageClassificationDataset(path_root, "train", "binary", target_size=(518, 518))
-    ds_test = RadImageClassificationDataset(path_root, "test", "binary", target_size=(518, 518))
+    ds_train = RadImageClassificationDataset(path_root, "train", "binary", model_name="rad-dino")
+    ds_test = RadImageClassificationDataset(path_root, "test", "binary", model_name="rad-dino")
     print("RSNA-Pneumonia...")
     print(f"Number of training data: {len(ds_train.sample_ids)}")
     print(f"Number of test data: {len(ds_test.sample_ids)}")
     
     path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR"
     class_labels = ["Lung Opacity", "Cardiomegaly", "Pleural thickening", "Aortic enlargement", "Pleural effusion", "Pulmonary fibrosis", "Tuberculosis", "No finding"]
-    ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", target_size=(518, 518))
-    ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", target_size=(518, 518))
+    ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", model_name="rad-dino")
+    ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", model_name="rad-dino")
     print("VinDr-CXR...")
     assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
     print(f"Number of training data: {len(ds_train.sample_ids)}")
@@ -167,16 +178,16 @@ if __name__ == "__main__":
     
     path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/findings/multi_view"
     class_labels = ['Architectural Distortion', 'Asymmetry', 'Mass', 'No Finding', 'Skin Thickening', 'Suspicious Calcification', 'Suspicious Lymph Node']
-    ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", multi_view=True, target_size=(518, 518))
-    ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", multi_view=True, target_size=(518, 518))
+    ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", multi_view=True, model_name="rad-dino")
+    ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", multi_view=True, model_name="rad-dino")
     print("VinDr-Mammo...")
     assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
     print(f"Number of training data: {len(ds_train.sample_ids)}")
     print(f"Number of test data: {len(ds_test.sample_ids)}")
     
     path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view"
-    ds_train = RadImageClassificationDataset(path_root, "train", "multiclass", multi_view=True, target_size=(518, 518))
-    ds_test = RadImageClassificationDataset(path_root, "test", "multiclass", multi_view=True, target_size=(518, 518))
+    ds_train = RadImageClassificationDataset(path_root, "train", "multiclass", multi_view=True, model_name="rad-dino")
+    ds_test = RadImageClassificationDataset(path_root, "test", "multiclass", multi_view=True, model_name="rad-dino")
     print("VinDr-Mammo BIRADS (Multi-view)...")
     print(f"Number of training studies: {len(ds_train.sample_ids)}")
     print(f"Number of test studies: {len(ds_test.sample_ids)}")

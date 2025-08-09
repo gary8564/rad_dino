@@ -54,7 +54,7 @@ python rad_dino/train/train.py \
     --data $DATA \
     --model $MODEL \
     --resume \
-    --resume-checkpoint-path "$CHECKPOINT_DIR" \
+    --resume-checkpoint-dir "$CHECKPOINT_DIR" \
     --unfreeze-backbone \
     $EXTRA_ARGS
 

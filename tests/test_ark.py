@@ -9,7 +9,7 @@ class TestSwinTransformer(unittest.TestCase):
     """Test the SwinTransformer class."""
     
     def setUp(self):
-        self.num_classes_list = [2, 3]  # List of class counts for different tasks
+        self.num_classes_list = [14, 14, 14, 3, 6, 1]  # List of class counts for different tasks
         self.img_size = 768
         self.batch_size = 4
         
@@ -90,7 +90,7 @@ class TestSwinTransformer(unittest.TestCase):
         self.assertEqual(logits.shape, (self.batch_size, self.num_classes_list[0]))
         
     def test_swin_transformer_generate_embeddings(self):
-        """Test SwinTransformer embedding generation."""
+        """Test SwinTransformer generate_embeddings method."""
         model = SwinTransformer(
             num_classes_list=self.num_classes_list,
             img_size=self.img_size,
@@ -106,11 +106,11 @@ class TestSwinTransformer(unittest.TestCase):
         x = torch.randn(self.batch_size, 3, self.img_size, self.img_size)
         
         # Test embeddings after projection
-        embeddings = model.generate_embeddings(x, after_proj=True)
+        embeddings, attention_maps = model.generate_embeddings(x, after_proj=True)
         self.assertEqual(embeddings.shape, (self.batch_size, model.num_features))
         
         # Test embeddings before projection
-        embeddings = model.generate_embeddings(x, after_proj=False)
+        embeddings, attention_maps = model.generate_embeddings(x, after_proj=False)
         self.assertEqual(embeddings.shape, (self.batch_size, model.encoder_features))
 
 
@@ -137,9 +137,9 @@ class TestArkClassifier(unittest.TestCase):
         # Mock the generate_embeddings method
         def mock_generate_embeddings(x, after_proj=True):
             if after_proj:
-                return torch.randn(x.shape[0], 1376)
+                return torch.randn(x.shape[0], 1376), []
             else:
-                return torch.randn(x.shape[0], 1536)
+                return torch.randn(x.shape[0], 1536), []
         self.mock_backbone.generate_embeddings = mock_generate_embeddings
         
     def test_ark_classifier_initialization(self):
@@ -164,7 +164,7 @@ class TestArkClassifier(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 3, self.img_size, self.img_size)
-        output = model(x)
+        output, attention_maps = model(x)
         
         self.assertEqual(output.shape, (self.batch_size, self.num_classes))
         
@@ -188,9 +188,9 @@ class TestArkClassifier(unittest.TestCase):
         # Mock backbone to return features for multiple views
         def mock_generate_embeddings_multi(x, after_proj=True):
             if after_proj:
-                return torch.randn(x.shape[0], 1376)
+                return torch.randn(x.shape[0], 1376), []
             else:
-                return torch.randn(x.shape[0], 1536)
+                return torch.randn(x.shape[0], 1536), []
         self.mock_backbone.generate_embeddings = mock_generate_embeddings_multi
         
         model = ArkClassifier(
@@ -202,7 +202,7 @@ class TestArkClassifier(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 4, 3, self.img_size, self.img_size)
-        output = model(x)
+        output, attention_maps = model(x)
         
         self.assertEqual(output.shape, (self.batch_size, self.num_classes))
         
@@ -210,9 +210,9 @@ class TestArkClassifier(unittest.TestCase):
         """Test ArkClassifier with weighted mean fusion."""
         def mock_generate_embeddings_multi(x, after_proj=True):
             if after_proj:
-                return torch.randn(x.shape[0], 1376)
+                return torch.randn(x.shape[0], 1376), []
             else:
-                return torch.randn(x.shape[0], 1536)
+                return torch.randn(x.shape[0], 1536), []
         self.mock_backbone.generate_embeddings = mock_generate_embeddings_multi
         
         model = ArkClassifier(
@@ -224,7 +224,7 @@ class TestArkClassifier(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 4, 3, self.img_size, self.img_size)
-        output = model(x)
+        output, attention_maps = model(x)
         
         self.assertEqual(output.shape, (self.batch_size, self.num_classes))
         
@@ -232,9 +232,9 @@ class TestArkClassifier(unittest.TestCase):
         """Test ArkClassifier with MLP adapter fusion."""
         def mock_generate_embeddings_multi(x, after_proj=True):
             if after_proj:
-                return torch.randn(x.shape[0], 1376)
+                return torch.randn(x.shape[0], 1376), []
             else:
-                return torch.randn(x.shape[0], 1536)
+                return torch.randn(x.shape[0], 1536), []
         self.mock_backbone.generate_embeddings = mock_generate_embeddings_multi
         
         model = ArkClassifier(
@@ -248,7 +248,7 @@ class TestArkClassifier(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 4, 3, self.img_size, self.img_size)
-        output = model(x)
+        output, attention_maps = model(x)
         
         self.assertEqual(output.shape, (self.batch_size, self.num_classes))
         
@@ -264,7 +264,7 @@ class TestArkClassifier(unittest.TestCase):
         self.assertEqual(model.embed_dim, 1536)  # Should use encoder_features
         
         x = torch.randn(self.batch_size, 3, self.img_size, self.img_size)
-        output = model(x)
+        output, attention_maps = model(x)
         
         self.assertEqual(output.shape, (self.batch_size, self.num_classes))
 
