@@ -3,7 +3,7 @@ import argparse
 import pandas as pd
 import logging
 from typing import Union
-from loggings.setup import init_logging
+from rad_dino.loggings.setup import init_logging
 from sklearn.model_selection import train_test_split
 init_logging()
 logger = logging.getLogger(__name__)
