@@ -2,7 +2,11 @@ from transformers import AutoModel
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
+import logging
 from typing import Callable, Optional
+from rad_dino.loggings.setup import init_logging
+init_logging()
+logger = logging.getLogger(__name__)
 
 class MedSigClassifier(nn.Module):
     def __init__(self, 
@@ -12,7 +16,9 @@ class MedSigClassifier(nn.Module):
                  num_views: Optional[int] = None,
                  view_fusion_type: Optional[str] = None,
                  adapter_dim: Optional[int] = None,
-                 view_fusion_hidden_dim: Optional[int] = None):
+                 view_fusion_hidden_dim: Optional[int] = None,
+                 return_attentions: bool = False,
+                 gradient_checkpointing: bool = False):
         """
         Initialize the MedSigLIP classifier.
         
@@ -27,12 +33,14 @@ class MedSigClassifier(nn.Module):
                 - "mlp_adapter": MLP-based feature adaptation and fusion
             adapter_dim: Hidden dimension for MLP adapters (only used if multi_view=True and view_fusion_type="mlp_adapter")
             view_fusion_hidden_dim: Hidden dimension for fusion MLP (only used if multi_view=True and view_fusion_type="mlp_adapter")
+            gradient_checkpointing: Whether to enable gradient checkpointing for memory optimization
         """
         super().__init__()
         self.backbone = backbone
         self.feat_dim = self.backbone.config.text_config.projection_size  # MedSigLIP's feature dim
         self.num_classes = num_classes
         self.multi_view = multi_view
+        self.return_attentions = return_attentions
         
         # Initialize classification head
         self._init_classification_head()
@@ -44,6 +52,32 @@ class MedSigClassifier(nn.Module):
         # Initialize strategy dictionaries for branch-free dispatch
         self._init_strategy_dictionaries(view_fusion_type)
         
+        # Enable gradient checkpointing if requested
+        if gradient_checkpointing:
+            self.enable_gradient_checkpointing()
+    
+    def enable_gradient_checkpointing(self):
+        """
+        Enable gradient checkpointing for memory optimization.
+        This trades compute for memory by not storing all intermediate activations.
+        """
+        try:
+            # Enable gradient checkpointing on the main backbone
+            self.backbone.gradient_checkpointing_enable()
+            logger.info("Enabled gradient checkpointing on MedSigLIP backbone")
+        except Exception as e:
+            logger.warning(f"Failed to enable gradient checkpointing: {e}")
+    
+    def disable_gradient_checkpointing(self):
+        """
+        Disable gradient checkpointing.
+        """
+        try:
+            self.backbone.gradient_checkpointing_disable()
+            logger.info("Gradient checkpointing disabled for MedSigLIP model")
+        except Exception as e:
+            logger.warning(f"Failed to disable gradient checkpointing: {e}")
+
     def _init_multi_view_components(self, 
                                    num_views: int, 
                                    view_fusion_type: str | None, 
@@ -329,7 +363,7 @@ class MedSigClassifier(nn.Module):
         # Process through vision model with attention maps
         vision_outputs = self.backbone.vision_model(
             pixel_values=pixel_values_reshaped,
-            output_attentions=True,
+            output_attentions=self.return_attentions,
             return_dict=True
         )
         
@@ -347,10 +381,12 @@ class MedSigClassifier(nn.Module):
         logits = self.head(fused_features)
         
         # Handle attention maps
-        attentions = vision_outputs.attentions
-        stacked_attns = torch.stack(attentions, dim=0)
-        stacked_attns = self.attention_reshape_strategies[self.multi_view](stacked_attns, batch_size, num_views)
-        
+        if self.return_attentions and hasattr(vision_outputs, "attentions") and vision_outputs.attentions is not None:
+            attentions = vision_outputs.attentions
+            stacked_attns = torch.stack(attentions, dim=0)
+            stacked_attns = self.attention_reshape_strategies[self.multi_view](stacked_attns, batch_size, num_views)
+        else:
+            stacked_attns = None
         return logits, stacked_attns
 
 if __name__ == "__main__":
@@ -380,17 +416,21 @@ if __name__ == "__main__":
     backbone = AutoModel.from_pretrained('google/medsiglip-448')
     
     # Test single-view
-    model_single = MedSigClassifier(backbone, num_classes=10, multi_view=False)
+    model_single = MedSigClassifier(backbone, num_classes=10, multi_view=False, return_attentions=True)
     print("Single-view model created successfully")
     
     # Test multi-view
-    model_multi = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="mean")
+    model_multi = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="mean", return_attentions=True)
     print("Multi-view model created successfully")
     
     # Test different fusion types
-    model_weighted = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="weighted_mean")
-    model_adapter = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="mlp_adapter")
+    model_weighted = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="weighted_mean", return_attentions=True)
+    model_adapter = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="mlp_adapter", return_attentions=True)
     print("All fusion types created successfully")
+    
+    # Test with gradient checkpointing for memory optimization
+    model_with_grad_ckpt = MedSigClassifier(backbone, num_classes=10, multi_view=False, gradient_checkpointing=True)
+    print("Model with gradient checkpointing created successfully")
     
     # Test unfreezing layers
     unfreeze_layers(model_multi, 2)

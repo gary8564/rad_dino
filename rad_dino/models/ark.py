@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 import logging
 from typing import Callable, Optional, List, Tuple
 import timm.models.swin_transformer as swin
@@ -20,6 +21,7 @@ class WindowAttention(swin.WindowAttention):
         super().__init__(*args, **kwargs)
         self.return_attention = False
         self.attention_maps = []
+        self.attention_metadata = []  # Store metadata for each attention map
     
     def forward(self, x, mask=None):
         """
@@ -52,6 +54,15 @@ class WindowAttention(swin.WindowAttention):
         # Store attention maps if requested
         if self.return_attention:
             self.attention_maps.append(attn.detach())
+            # Store metadata: (num_windows, window_size, window_size, num_heads)
+            num_windows = B_ // (self.window_size[0] * self.window_size[1])
+            window_size = self.window_size[0] * self.window_size[1]
+            self.attention_metadata.append({
+                'num_windows': num_windows,
+                'window_size': window_size,
+                'num_heads': self.num_heads,
+                'seq_len': N
+            })
         
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
         x = self.proj(x)
@@ -61,8 +72,10 @@ class WindowAttention(swin.WindowAttention):
     def get_attention_maps(self):
         """Get stored attention maps and clear the list."""
         maps = self.attention_maps.copy()
+        metadata = self.attention_metadata.copy()
         self.attention_maps.clear()
-        return maps
+        self.attention_metadata.clear()
+        return maps, metadata
 
 class SwinTransformerBlock(swin.SwinTransformerBlock):
     """
@@ -102,7 +115,8 @@ class SwinTransformer(swin.SwinTransformer):
                  num_heads: tuple = (6, 12, 24, 48),
                  projector_features: int = 1376,
                  use_mlp: bool = False,
-                 return_attention: bool = False):
+                 return_attention: bool = False,
+                 grad_checkpointing: bool = False):
         """
         Initialize Swin Transformer for Ark with attention map support.
         
@@ -130,6 +144,7 @@ class SwinTransformer(swin.SwinTransformer):
         assert num_classes_list is not None
         self.num_classes_list = num_classes_list
         self.return_attention = return_attention
+        self.grad_checkpointing = grad_checkpointing
         
         # Initialize projector
         self.encoder_features = self.num_features
@@ -179,17 +194,78 @@ class SwinTransformer(swin.SwinTransformer):
                 # Enable attention map collection
                 new_block.attn.return_attention = True
                 stage.blocks[i] = new_block
+                
+    def _collect_attention_maps(self):
+        """Collect attention maps from all transformer blocks."""
+        attention_maps = []
+        attention_metadata = []
+        stage_info = []
+        
+        for stage_idx, stage in enumerate(self.layers):
+            stage_attention_maps = []
+            stage_metadata = []
+            
+            for block_idx, block in enumerate(stage.blocks):
+                if hasattr(block.attn, 'attention_maps'):
+                    # Get attention maps 
+                    maps = block.attn.attention_maps.copy()
+                    if maps:  
+                        stage_attention_maps.extend(maps)
+                        # Create metadata for each attention map
+                        for map_idx, attn_map in enumerate(maps):
+                            meta = {
+                                'stage': stage_idx,
+                                'block': block_idx,
+                                'map_idx': map_idx,
+                                'shift_size': block.shift_size,
+                                'window_size': block.attn.window_size[0] * block.attn.window_size[1] if hasattr(block.attn, 'window_size') else attn_map.shape[-1],
+                                'num_heads': block.attn.num_heads,
+                                'seq_len': attn_map.shape[-1]
+                            }
+                            stage_metadata.append(meta)
+            
+            if stage_attention_maps:
+                attention_maps.extend(stage_attention_maps)
+                attention_metadata.extend(stage_metadata)
+                stage_info.append({
+                    'stage_idx': stage_idx,
+                    'num_blocks': len(stage.blocks),
+                    'input_resolution': stage.blocks[0].input_resolution if stage.blocks else None,
+                    'downsample': stage.downsample is not None
+                })
+        
+        return attention_maps, attention_metadata, stage_info
+    
+    def _clear_attention_maps(self):
+        """Clear all accumulated attention maps."""
+        for stage in self.layers:
+            for block in stage.blocks:
+                if hasattr(block.attn, 'attention_maps'):
+                    block.attn.attention_maps.clear()
+                    block.attn.attention_metadata.clear()
     
     def forward_features(self, x):
         """Extract features from the backbone with optional attention maps."""
+        # Ensure attention maps do not accumulate across forward calls
         if self.return_attention:
-            # Clear previous attention maps
-            for stage in self.layers:
-                for block in stage.blocks:
-                    if hasattr(block.attn, 'attention_maps'):
-                        block.attn.attention_maps.clear()
-        
-        x = super().forward_features(x)
+            self._clear_attention_maps()
+
+        if self.grad_checkpointing:
+            # Use gradient checkpointing for memory efficiency
+            # Patch embedding
+            x = self.patch_embed(x)
+            
+            # Apply checkpointing to the entire layers module
+            x = checkpoint.checkpoint(
+                lambda x_input: self.layers(x_input), 
+                x,
+                use_reentrant=False
+            )
+            
+            # Apply final normalization
+            x = self.norm(x)
+        else:
+            x = super().forward_features(x)
         
         # Handle compatibility between timm v0.5.4 and latest version
         # timm 0.5.x -> (B, C)
@@ -214,26 +290,67 @@ class SwinTransformer(swin.SwinTransformer):
         
         if head_n is not None:
             if self.return_attention:
-                attention_maps = self._collect_attention_maps()
+                attention_maps, attention_metadata, stage_info = self._collect_attention_maps()
                 return self.omni_heads[head_n](x), attention_maps
             else:
-                return self.omni_heads[head_n](x)
+                return self.omni_heads[head_n](x), None
         else:
             outputs = [head(x) for head in self.omni_heads]
             if self.return_attention:
-                attention_maps = self._collect_attention_maps()
+                attention_maps, attention_metadata, stage_info = self._collect_attention_maps()
                 return outputs, attention_maps
             else:
-                return outputs
+                return outputs, None
     
-    def _collect_attention_maps(self):
-        """Collect attention maps from all transformer blocks."""
-        attention_maps = []
-        for stage in self.layers:
-            for block in stage.blocks:
-                if hasattr(block.attn, 'attention_maps'):
-                    attention_maps.extend(block.attn.attention_maps)
-        return attention_maps
+    def get_hierarchical_attention_maps(self):
+        """
+        Get attention maps organized by stages for hierarchical visualization.
+        
+        Returns:
+            dict: Dictionary with stage-wise attention maps and metadata
+        """
+        attention_maps, attention_metadata, stage_info = self._collect_attention_maps()
+        
+        # Organize attention maps by stage
+        stage_attention_maps = {}
+        for stage_idx in range(len(self.layers)):
+            stage_attention_maps[stage_idx] = {
+                'attention_maps': [],
+                'metadata': [],
+                'stage_info': stage_info[stage_idx] if stage_idx < len(stage_info) else None
+            }
+        
+        # Populate stage-wise attention maps
+        for attn_map, meta in zip(attention_maps, attention_metadata):
+            stage_idx = meta['stage']
+            if stage_idx in stage_attention_maps:
+                stage_attention_maps[stage_idx]['attention_maps'].append(attn_map)
+                stage_attention_maps[stage_idx]['metadata'].append(meta)
+        
+        return stage_attention_maps
+    
+    def get_last_layer_attention_maps(self):
+        """
+        Get attention maps from the last layer.
+        
+        Returns:
+            tuple: (attention_maps, metadata) from the last stage
+        """
+        attention_maps, attention_metadata, _ = self._collect_attention_maps()
+        
+        if not attention_maps:
+            return None, None
+        
+        # Get the last stage attention maps
+        last_stage_maps = []
+        last_stage_metadata = []
+        
+        for attn_map, meta in zip(attention_maps, attention_metadata):
+            if meta['stage'] == len(self.layers) - 1:  # Last stage
+                last_stage_maps.append(attn_map)
+                last_stage_metadata.append(meta)
+        
+        return last_stage_maps, last_stage_metadata
     
     def generate_embeddings(self, x, after_proj: bool = True):
         """
@@ -244,17 +361,17 @@ class SwinTransformer(swin.SwinTransformer):
             after_proj: Whether to apply projection after feature extraction
             
         Returns:
-            (embeddings, attention_maps) - attention_maps is empty list if return_attention=False
+            (embeddings, attention_maps) - attention_maps is None if return_attention=False
         """
         x = self.forward_features(x)
         if after_proj:
             x = self.projector(x)
         
         if self.return_attention:
-            attention_maps = self._collect_attention_maps()
+            attention_maps, attention_metadata, stage_info = self._collect_attention_maps()
             return x, attention_maps
         else:
-            return x, []
+            return x, None
     
     def get_feature_dimension(self, after_proj: bool = True) -> int:
         """
@@ -538,9 +655,31 @@ class ArkClassifier(nn.Module):
         
         # Reshape attention maps
         num_views = getattr(self, 'num_views', 1)
-        attention_maps = self.attention_reshape_strategies[self.multi_view](attention_maps, batch_size, num_views)
+        if attention_maps is not None:
+            attention_maps = self.attention_reshape_strategies[self.multi_view](attention_maps, batch_size, num_views)
         return logits, attention_maps
-
+    
+    def get_hierarchical_attention_maps(self):
+        """
+        Get hierarchical attention maps organized by stages.
+        
+        Returns:
+            dict: Stage-wise attention maps with metadata
+        """
+        if hasattr(self.backbone, 'get_hierarchical_attention_maps'):
+            return self.backbone.get_hierarchical_attention_maps()
+        return None
+    
+    def get_last_layer_attention_maps(self):
+        """
+        Get attention maps from the last layer only.
+        
+        Returns:
+            tuple: (attention_maps, metadata) from the last stage
+        """
+        if hasattr(self.backbone, 'get_last_layer_attention_maps'):
+            return self.backbone.get_last_layer_attention_maps()
+        return None, None
 
 def load_prtrained_ark_model(checkpoint_path: str, 
                    num_classes_list: list[int] = [14, 14, 14, 3, 6, 1],
@@ -553,6 +692,7 @@ def load_prtrained_ark_model(checkpoint_path: str,
                    projector_features: int = 1376,
                    use_mlp: bool = False,
                    return_attention: bool = False,
+                   grad_checkpointing: bool = False,
                    device: str = "cpu") -> SwinTransformer:
     """
     Load a pre-trained Ark model from checkpoint.
@@ -568,6 +708,8 @@ def load_prtrained_ark_model(checkpoint_path: str,
         num_heads: Number of attention heads in each stage
         projector_features: Dimension for projector (if None, no projector)
         use_mlp: Whether to use MLP projector
+        return_attention: Whether to return attention maps
+        grad_checkpointing: Whether to enable gradient checkpointing for memory efficiency
         device: Device to load the model on
     
     Returns:
@@ -584,7 +726,8 @@ def load_prtrained_ark_model(checkpoint_path: str,
         num_heads=num_heads,
         projector_features=projector_features,
         use_mlp=use_mlp,
-        return_attention=return_attention
+        return_attention=return_attention,
+        grad_checkpointing=grad_checkpointing
     )
     
     # Load checkpoint
@@ -720,25 +863,63 @@ if __name__ == "__main__":
     
     # Test forward pass with dummy data    
     # Test single-view forward pass
+    print("\n" + "="*50)
+    print("Testing Single-view Forward Pass")
+    print("="*50)
     dummy_input_single = torch.randn(2, 3, 768, 768)
     try:
         logits_single, attention_maps_single = model_single(dummy_input_single)
         print(f"Single-view forward pass successful. Output shape: {logits_single.shape}")
-        print(f"Single-view attention maps: {len(attention_maps_single)} layers")
-        if attention_maps_single:
-            print(f"First attention map shape: {attention_maps_single[0].shape}")
+        if attention_maps_single is not None:
+            print(f"Single-view attention maps: {len(attention_maps_single)} layers")
+            if attention_maps_single:
+                print(f"First attention map shape: {attention_maps_single[0].shape}")
+        else:
+            print("Single-view attention maps: None (not enabled)")
     except Exception as e:
         raise RuntimeError(f"Single-view forward pass failed: {e}")
     
     # Test multi-view forward pass
+    print("\n" + "="*50)
+    print("Testing Multi-view Forward Pass")
+    print("="*50)
     dummy_input_multi = torch.randn(2, 4, 3, 768, 768)  # [batch_size, num_views, channels, height, width]
     try:
         logits_multi, attention_maps_multi = model_multi_mean(dummy_input_multi)
         print(f"Multi-view forward pass successful. Output shape: {logits_multi.shape}")
-        print(f"Multi-view attention maps: {len(attention_maps_multi)} layers")
-        if attention_maps_multi:
-            print(f"First attention map shape: {attention_maps_multi[0].shape}")
+        if attention_maps_multi is not None:
+            print(f"Multi-view attention maps: {len(attention_maps_multi)} layers")
+            if attention_maps_multi:
+                print(f"First attention map shape: {attention_maps_multi[0].shape}")
+        else:
+            print("Multi-view attention maps: None (not enabled)")
     except Exception as e:
         raise RuntimeError(f"Multi-view forward pass failed: {e}")
+    
+    # Test hierarchical attention maps (single-view backbone)
+    print("\n" + "="*50)
+    print("Testing Hierarchical Attention Maps (Single-view)")
+    print("="*50)
+    try:
+        _ = model_single(dummy_input_single)
+        hier_attn = model_single.get_hierarchical_attention_maps()
+        if not hier_attn:
+            raise RuntimeError("Failed to retrieve hierarchical attention maps: returned None/empty")
+        print(f"Hierarchical attention maps: {len(hier_attn)} stages")
+        for stage_idx, stage_data in hier_attn.items():
+            num_maps = len(stage_data['attention_maps']) if stage_data and 'attention_maps' in stage_data else 0
+            print(f"Stage {stage_idx}: {num_maps} attention maps")
+            if stage_data and stage_data.get('stage_info'):
+                print(f"  - Input resolution: {stage_data['stage_info']['input_resolution']}")
+                print(f"  - Downsample present: {stage_data['stage_info']['downsample']}")
+        
+        last_maps, last_meta = model_single.get_last_layer_attention_maps()
+        if last_maps is None:
+            raise RuntimeError("Failed to retrieve last layer attention maps: returned None")
+        print(f"Last layer attention maps: {len(last_maps)} maps")
+        if last_meta:
+            print(f"  - Sample meta: stage={last_meta[0].get('stage')}, block={last_meta[0].get('block')}, heads={last_meta[0].get('num_heads')}")
+    except Exception as e:
+        raise RuntimeError(f"Hierarchical attention test failed: {e}")
     
     print("All Ark model tests completed successfully!")

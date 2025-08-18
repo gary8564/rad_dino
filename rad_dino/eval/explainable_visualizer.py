@@ -1,7 +1,8 @@
 import torch
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Any
 from accelerate import Accelerator
 from rad_dino.utils.visualization.visualize_attention import visualize_attention_maps
+from rad_dino.utils.visualization.visualize_swin_attention import visualize_swin_attention_maps
 from rad_dino.utils.visualization.visualize_lrp import visualize_lrp_maps
 from rad_dino.utils.visualization.visualize_gradcam import visualize_gradcam
 from rad_dino.models.dino import DinoClassifier
@@ -21,12 +22,14 @@ def _parse_save_heads(save_heads_arg: Optional[str] = None) -> Union[str, int]:
     if save_heads_arg in ['mean', 'max', 'min']:
         logger.info(f"Using attention head fusion: {save_heads_arg}")
         return save_heads_arg
-    elif save_heads_arg.isdigit():
+    if save_heads_arg.isdigit():
         head_fusion = int(save_heads_arg)
-        logger.info(f"Using attention head fusion: {head_fusion}")
+        if head_fusion <= 0:
+            raise ValueError("Integer save_heads must be > 0")
+        logger.info(f"Using per-head visualization for {head_fusion} random heads")
         return head_fusion
     else:
-        raise ValueError(f"Invalid save_heads argument: {save_heads_arg}. Must be one of 'mean', 'max', 'min' or an integer.")
+        raise ValueError(f"Invalid save_heads argument: {save_heads_arg}. Must be 'mean', 'max', 'min', or a positive integer.")
 
 def _run_gradcam_visualization(model: DinoClassifier, 
                                images: torch.Tensor, 
@@ -85,23 +88,49 @@ class ExplainableVisualizer:
             self.image_mean, self.image_std
         )
     
-    def run_attention_visualization(self, attentions: torch.Tensor, images: torch.Tensor, 
-                                   image_ids: List[str], backbone_config, 
-                                   attention_threshold: float, save_heads: str, 
-                                   compute_rollout: bool = False) -> None:
+    def run_attention_visualization(self, 
+                                    attentions: List[torch.Tensor] | torch.Tensor, 
+                                    images: torch.Tensor, 
+                                    image_ids: List[str], 
+                                    backbone_config, 
+                                    attention_threshold: float, 
+                                    save_heads: str, 
+                                    compute_rollout: bool = False) -> None:
         """Run attention visualization if enabled"""
         if not self.show_attention or attentions is None:
             return
             
         save_heads_param = _parse_save_heads(save_heads)
-        patch_size = getattr(backbone_config, 'patch_size', DEFAULT_PATCH_SIZE)
         
-        visualize_attention_maps(
-            attentions, images, image_ids, self.output_paths.attention, 
-            self.accelerator, self.image_mean, self.image_std, 
-            patch_size=patch_size, threshold=attention_threshold, 
-            head_fusion=save_heads_param, 
-            compute_rollout=compute_rollout, rollout_discard_ratio=0.0)
+        # Detect Swin/Ark models: return raw list of per-block attention maps
+        # ViT/DINO models: return stacked tensor [num_layers, B, num_heads, seq_len, seq_len]
+        is_swin_model = (hasattr(self.model_wrapper.model, 'get_hierarchical_attention_maps') and 
+                        isinstance(attentions, list))
+
+        if is_swin_model:
+            # For Swin/Ark: Get hierarchical attention maps for proper visualization
+            hierarchical_attentions = self.model_wrapper.model.get_hierarchical_attention_maps()
+            visualize_swin_attention_maps(
+                hierarchical_attentions=hierarchical_attentions,
+                images=images,
+                image_ids=image_ids,
+                output_dir=self.output_paths.attention,
+                image_mean=self.image_mean,
+                image_std=self.image_std,
+                head_fusion=save_heads_param,
+                compute_rollout=compute_rollout,
+                rollout_discard_ratio=0.9,
+                threshold=attention_threshold,
+            )
+        else:
+            # Use ViT/DINO visualizer for stacked tensor attention maps
+            patch_size = getattr(backbone_config, 'patch_size', DEFAULT_PATCH_SIZE)
+            visualize_attention_maps(
+                attentions, images, image_ids, self.output_paths.attention, 
+                self.accelerator, self.image_mean, self.image_std, 
+                patch_size=patch_size, threshold=attention_threshold, 
+                head_fusion=save_heads_param, 
+                compute_rollout=compute_rollout, rollout_discard_ratio=0.9)
     
     def run_lrp_visualization(self, model, images: torch.Tensor, 
                              image_ids: List[str], multi_view: bool) -> None:

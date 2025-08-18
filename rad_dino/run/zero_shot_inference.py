@@ -53,7 +53,13 @@ class MedSigLIPZeroShotClassifier:
             logits_per_image: Image-text similarity scores
         """
         # Process text prompts only
-        text_inputs = self.tokenizer(text_prompts, padding="max_length", return_tensors="pt", truncation=True)
+        text_inputs = self.tokenizer(
+            text_prompts,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
         text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
         
         # Move images to device
@@ -91,6 +97,15 @@ class MedSigLIPZeroShotClassifier:
             image_ids = batch["sample_ids"]
             # Get predictions 
             logits = self.predict(images, text_prompts)
+            # For binary tasks, extract the positive-class logit
+            if evaluation_processor.task == "binary" and text_prompts is not None and len(text_prompts) >= 2:
+                # Apply softmax to get probabilities 
+                probs = torch.softmax(logits, dim=1)
+                # Take the positive-class probability
+                # Ensure that the prompts order is negative then positive 
+                prob_pos = probs[:, -1]
+                eps = 1e-6
+                logits = torch.logit(torch.clamp(prob_pos, eps, 1 - eps)).unsqueeze(1)
             # Add batch results to evaluation processor
             evaluation_processor.add_batch_results(image_ids, labels, logits)
         # Process and save results using evaluation processor
@@ -143,7 +158,7 @@ class ArkZeroShotClassifier:
         """
         images = images.to(self.device)
         with torch.no_grad():
-            _, logits = self.model(images, head_n=head_index)
+            logits, _ = self.model(images, head_n=head_index)
         return logits
     
     def predict_all_heads(self, images: torch.Tensor) -> torch.Tensor:
@@ -158,7 +173,8 @@ class ArkZeroShotClassifier:
         """
         images = images.to(self.device)
         with torch.no_grad():
-            pre_logits = self.model(images)  # Returns list of outputs from all heads
+            # model returns list of outputs from all heads and attention maps
+            pre_logits, _ = self.model(images) 
             logits = torch.cat(pre_logits, dim=1)
         return logits
     
@@ -174,6 +190,9 @@ class ArkZeroShotClassifier:
         Args:
             data_loader: DataLoader for test data
             evaluation_processor: EvaluationProcessor for saving results
+            dataset_name: Name of the dataset
+            task_type: Type of task
+            downstream_target_labels: List of downstream target labels
             
         Returns:
             metrics
@@ -240,7 +259,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--model', type=str, required=True, 
                        choices=['medsiglip', 'ark']) 
     parser.add_argument('--data', type=str, required=True, 
-                       choices=['VinDr-CXR', 'RSNA-Pneumonia'])
+                       choices=['VinDr-CXR', 'RSNA-Pneumonia', 'TAIX-Ray'])
     parser.add_argument('--output-path', type=str, required=True,
                        help="Output directory for results")
     parser.add_argument('--batch-size', type=int, default=16,
@@ -288,16 +307,16 @@ def get_text_prompts(prompt_file: str, dataset: str, task: str) -> List[str]:
         prompts = json.load(f)
     return prompts.get(dataset, {}).get(task, [])
 
-def create_output_directories(output_dir: str, accelerator: Accelerator) -> OutputPaths:
+def create_output_directories(output_base_dir: str, accelerator: Accelerator) -> OutputPaths:
     """Create output directories and return paths for zero-shot inference"""
     if accelerator.is_main_process:
-        os.makedirs(f"{output_dir}/figs", exist_ok=True)
-        os.makedirs(f"{output_dir}/table", exist_ok=True)
+        os.makedirs(f"{output_base_dir}/figs", exist_ok=True)
+        os.makedirs(f"{output_base_dir}/table", exist_ok=True)
     
     return OutputPaths(
-        base=output_dir,
-        figs=f"{output_dir}/figs",
-        table=f"{output_dir}/table",
+        base=output_base_dir,
+        figs=f"{output_base_dir}/figs",
+        table=f"{output_base_dir}/table",
         gradcam=None,  
         attention=None,  
         lrp=None
@@ -315,7 +334,8 @@ def main():
     accelerator = Accelerator()
     
     # Create output directories
-    output_paths = create_output_directories(args.output_path, accelerator)
+    output_base_dir = os.path.join(args.output_path, args.data, args.model)
+    output_paths = create_output_directories(output_base_dir, accelerator)
     
     # Initialize classifier based on model type
     if args.model == "ark":

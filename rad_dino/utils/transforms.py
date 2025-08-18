@@ -24,7 +24,7 @@ def get_transforms(model_name: str) -> Tuple[transforms.Compose, transforms.Comp
     interpolation = config["interpolation"]
     
     train_transform = transforms.Compose([
-        transforms.ToPILImage(),
+        # transforms.ToPILImage(),
         transforms.Grayscale(num_output_channels=3),
         transforms.RandomResizedCrop(crop_size, scale=(0.08, 1.0), ratio=(0.75, 1.3333), interpolation=interpolation),
         transforms.RandomHorizontalFlip(p=0.5),
@@ -32,7 +32,6 @@ def get_transforms(model_name: str) -> Tuple[transforms.Compose, transforms.Comp
                     [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                     p=0.8,
         ),
-        transforms.RandomGrayscale(p=0.2),
         transforms.RandomAffine(
             degrees=30,                            # ±30° rotation
             scale=(0.8,1.2),                       # ±20% zoom
@@ -47,7 +46,7 @@ def get_transforms(model_name: str) -> Tuple[transforms.Compose, transforms.Comp
     ])
 
     val_transform = transforms.Compose([
-        transforms.ToPILImage(),
+        # transforms.ToPILImage(),
         transforms.Grayscale(num_output_channels=3),
         transforms.Resize(size, interpolation=interpolation),  
         transforms.CenterCrop(crop_size),

@@ -35,7 +35,7 @@ MODEL_REPOS = {
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv2 linear probling", add_help=add_help)
     parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary'])
-    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'CANDID-PTX', 'RSNA-Pneumonia', 'VinDr-Mammo'])
+    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray'])
     parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'medsiglip', 'ark']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
     parser.add_argument('--multi-view', action='store_true', help="Enable multi-view processing for mammography data")
@@ -72,9 +72,36 @@ def get_args_parser(add_help: bool = True):
     )
     parser.add_argument(
         "--output-dir",
-        default="../../runs/",
+        default="/hpcwork/qj474765/runs/",
         type=str,
         help="Output directory to save logs and checkpoints",
+    )
+    parser.add_argument(
+        "--grad-accumulation-steps",
+        type=int,
+        default=2,
+        help="Number of gradient accumulation steps (micro-batch count per optimization step)",
+    )
+    parser.add_argument(
+        "--grad-checkpointing",
+        action="store_true",
+        help="Enable gradient checkpointing to reduce activation memory",
+    )
+    parser.add_argument(
+        "--return-output-attentions",
+        action="store_true",
+        help="Compute and return attention maps during training (memory-intensive)",
+    )
+    parser.add_argument(
+        "--use-bf16",
+        action="store_true",
+        help="Use bf16 precision for training",
+    )
+    parser.add_argument(
+        "--train-subset",
+        type=float,
+        default=None,
+        help="Optional only use a fraction (0-1) of the training set to study data efficiency."
     )
     return parser
 
@@ -104,6 +131,7 @@ def setup(args, accelerator: Accelerator):
         accelerator.gradient_accumulation_steps,
         kfold=args.kfold,
         multi_view=args.multi_view,
+        train_subset_fraction=args.train_subset,
     )
 
     if isinstance(data_loader, tuple):
@@ -145,6 +173,8 @@ def setup(args, accelerator: Accelerator):
             num_heads=(6, 12, 24, 48),
             projector_features=1376,  # Ark default projector features
             use_mlp=False,
+            return_attention=args.return_output_attentions,
+            grad_checkpointing=args.grad_checkpointing,
             device=accelerator.device
         )
         model = ArkClassifier(backbone, 
@@ -163,7 +193,9 @@ def setup(args, accelerator: Accelerator):
                                num_views=multi_view_config.num_views if multi_view_config else None,
                                view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
                                adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
-                               view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None)
+                               view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None,
+                               return_attentions=args.return_output_attentions,
+                               gradient_checkpointing=args.grad_checkpointing)
     else:
         backbone = load_pretrained_model(model_repo)
         model = DinoClassifier(backbone, 
@@ -172,7 +204,9 @@ def setup(args, accelerator: Accelerator):
                                num_views=multi_view_config.num_views if multi_view_config else None,
                                view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
                                adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
-                               view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None)
+                               view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None,
+                               return_attentions=args.return_output_attentions,
+                               gradient_checkpointing=args.grad_checkpointing)
 
     # Loss function and evaluation metrics setup
     if args.weighted_loss:
@@ -225,7 +259,17 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
             wandb_name += "_weighted_loss"
         if args.resume:
             wandb_name += "_resume"
-        wandb.init(project="cxr_models_benchmark", name=wandb_name, config={"epochs": num_epochs, "batch_size": batch_size})
+        if args.train_subset is not None:
+            wandb_name += f"_train_subset_{int(args.train_subset*100)}pct"
+        wandb.init(
+            project="cxr_models_benchmark",
+            name=wandb_name,
+            config={
+                "epochs": num_epochs,
+                "batch_size": batch_size,
+                "train_subset_fraction": args.train_subset,
+            },
+        )
     
     # Initialize trainer
     trainer = Trainer(
@@ -260,8 +304,12 @@ def main(args):
         raise ValueError("When `--progressive-unfreeze` is specified, `--unfreeze-backbone` must also be specified.")
     if args.model == "ark" and args.pretrained_ark_path is None:
         raise ValueError("Ark checkpoint path must be specified for Ark model. Use --pretrained-ark-path argument.")
-    accelerator = Accelerator(mixed_precision="fp16" if args.optimize_compute else "no",
-                              gradient_accumulation_steps=2)
+    if args.use_bf16 and not args.optimize_compute:
+        raise ValueError("`--use-bf16` is only supported when `--optimize-compute` is enabled.")
+    accelerator = Accelerator(
+        mixed_precision="bf16" if args.use_bf16 else "fp16" if args.optimize_compute else "no",
+        gradient_accumulation_steps=args.grad_accumulation_steps,
+    )
     
     # Create both output and checkpoint directories
     checkpoint_folder_name = f"checkpoints_{CURR_TIME}_{args.data}_{args.model}"
@@ -271,7 +319,10 @@ def main(args):
         checkpoint_folder_name += "_unfreeze_backbone"
     if args.multi_view:
         checkpoint_folder_name += "_multi_view"
-    output_dir = os.path.join(CURR_DIR, args.output_dir)
+    if not os.path.isabs(args.output_dir):
+        output_dir = os.path.join(CURR_DIR, args.output_dir)
+    else:
+        output_dir = args.output_dir
     checkpoint_dir = os.path.join(output_dir, checkpoint_folder_name)
     if args.resume_checkpoint_dir:
         resume_dir = args.resume_checkpoint_dir

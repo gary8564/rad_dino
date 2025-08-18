@@ -59,25 +59,27 @@ def _run_onnx_inference(session: onnxruntime.InferenceSession,
     """ONNX inference workflow"""
     batch_size = images.shape[0]
     attentions = None
-    
+
     # Validate ONNX model input shape compatibility (excluding batch dimension)
     onnx_input_shape = session.get_inputs()[0].shape
     expected_shape = tuple(onnx_input_shape[1:])
     actual_shape = tuple(images.shape[1:])
-    
     if expected_shape != actual_shape:
         raise ValueError(
             f"Shape mismatch: ONNX model expects input shape {expected_shape}, "
             f"but got {actual_shape} from data. "
             "Check if you are using the correct model for single-view or multi-view inference."
         )
-    
+
+    use_gpu = 'CUDAExecutionProvider' in session.get_providers()
+    many_attn_outputs = show_attention and len(output_names) > 2
+
     with torch.no_grad():
-        if 'CUDAExecutionProvider' in session.get_providers():
-            # GPU inference with IOBinding
+        if use_gpu and not many_attn_outputs:
+            # GPU with IOBinding
             io_binding = session.io_binding()
             device_id = accelerator.device.index if accelerator.device.index is not None else 0
-            
+
             # Bind input
             io_binding.bind_input(
                 name=input_name,
@@ -87,24 +89,25 @@ def _run_onnx_inference(session: onnxruntime.InferenceSession,
                 shape=tuple(images.shape),
                 buffer_ptr=images.data_ptr()
             )
-            
+
             # Bind logits output
             logits = torch.empty((batch_size, num_classes), dtype=torch.float32, device=accelerator.device)
             io_binding.bind_output(
                 name=output_names[0],
-                device_type='cuda', 
+                device_type='cuda',
                 device_id=device_id,
                 element_type=np.float32,
                 shape=(batch_size, num_classes),
                 buffer_ptr=logits.data_ptr()
             )
-            
-            # Bind attention output if needed and available
+
+            # Bind attention output if present
             if show_attention and len(output_names) > 1:
                 num_layers = backbone_config.num_hidden_layers
                 num_heads = backbone_config.num_attention_heads
-                attention_shape, _ = _calculate_attention_shape(backbone_config, images, multi_view, num_layers, num_heads)
-                
+                attention_shape, _ = _calculate_attention_shape(
+                    backbone_config, images, multi_view, num_layers, num_heads
+                )
                 attentions = torch.empty(attention_shape, dtype=torch.float32, device=accelerator.device)
                 io_binding.bind_output(
                     name=output_names[1],
@@ -114,17 +117,29 @@ def _run_onnx_inference(session: onnxruntime.InferenceSession,
                     shape=attention_shape,
                     buffer_ptr=attentions.data_ptr()
                 )
-            
+
             session.run_with_iobinding(io_binding)
-            
+
         else:
-            # CPU inference fallback
+            # CPU fallback
             input_data = images.cpu().numpy()
             onnx_outputs = session.run(output_names, {input_name: input_data})
             logits = torch.from_numpy(onnx_outputs[0]).to(accelerator.device)
+
             if show_attention and len(onnx_outputs) > 1:
-                attentions = torch.from_numpy(onnx_outputs[1]).to(accelerator.device)
-    
+                # Stacking multiple attention outputs to [num_layers, batch_size, num_heads, seq_len, seq_len]
+                attn_arrays = [out for name, out in zip(output_names, onnx_outputs) if name != output_names[0]]
+                torch_tensors: List[torch.Tensor] = []
+                for arr in attn_arrays:
+                    t = torch.from_numpy(arr).to(accelerator.device)
+                    if t.dim() == 3:  # [B, S, S] -> [B, 1, S, S]
+                        t = t.unsqueeze(1)
+                    torch_tensors.append(t)
+                try:
+                    attentions = torch.stack(torch_tensors, dim=0)
+                except Exception as e:
+                    raise Exception(f"Failed to stack attention outputs: {e}.")
+
     return logits, attentions
 
 def _run_pytorch_inference(model: DinoClassifier | MedSigClassifier | ArkClassifier, images: torch.Tensor, 

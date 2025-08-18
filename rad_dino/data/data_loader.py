@@ -124,7 +124,8 @@ def load_data(data_root_folder: str,
               kfold: int | None = None,
               train_size: float = 0.75,
               seed: int = 42,
-              multi_view: bool = False):
+              multi_view: bool = False,
+              train_subset_fraction: float | None = None):
     """
     Load and split data for training and validation.
     
@@ -140,6 +141,7 @@ def load_data(data_root_folder: str,
         train_size: Fraction of data to use for training
         seed: Random seed for reproducibility
         multi_view: Whether to use multi-view data
+        train_subset_fraction: Use fraction of the training set to use for training to study data efficiency.
         
     Returns:
         List of (train_loader, val_loader) tuples for k-fold, or single tuple for single split
@@ -193,5 +195,13 @@ def load_data(data_root_folder: str,
         torch.manual_seed(seed)
         perm = torch.randperm(n_total_samples).tolist()
         train_idx, val_idx = perm[:n_train], perm[n_train:]
+
+        # Optionally downsample the training indices to a user-specified fraction
+        if train_subset_fraction is not None and 0 < train_subset_fraction < 1:
+            n_subset = max(1, int(len(train_idx) * train_subset_fraction))
+            train_idx = train_idx[:n_subset]
+            logger.info(
+                f"Using a subset of the training set: {n_subset}/{len(perm[:n_train])} ({train_subset_fraction*100:.1f}%)"
+            )
         return create_train_loader(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
                                 mini_batch_size, batch_size, num_workers, multi_view) 

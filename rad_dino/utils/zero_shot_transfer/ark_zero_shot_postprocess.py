@@ -69,6 +69,7 @@ def build_target_to_pretrained_ark_indices(
         positive_label = next(iter(alias_map.keys()))
         synonyms = alias_map.get(positive_label, [positive_label])
         target_to_ark_indices[positive_label] = find_pretrained_ark_indices_for_synonyms(synonyms, label_to_indices)
+        return target_to_ark_indices
 
     if not downstream_target_labels:
         raise ValueError("`downstream_target_labels` must be provided if the downstream classification task is not a binary case.")

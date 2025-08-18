@@ -5,11 +5,11 @@
 #SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=4G 
-#SBATCH --time=1:00:00                 
-#SBATCH --job-name=dinov2-small_vindr_mammo_inference_single_view
-#SBATCH --output=stdout_dinov2-small_vindr_mammo_inference_single_view.txt    
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G 
+#SBATCH --time=2:00:00                 
+#SBATCH --job-name=ark_vindrmammo_inference
+#SBATCH --output=stdout_ark_vindrmammo_inference.txt    
 #SBATCH --account=rwth1833              
 
 
@@ -22,13 +22,13 @@ conda activate rad-dino
 ### Configuration
 TASK="multiclass"
 DATA="VinDr-Mammo"
-MODEL="dinov2-small"
-MODEL_PATH="runs/checkpoints_2025_07_10_220545_VinDr-Mammo_dinov2-small_single_view_birads"
+MODEL="ark"
+MODEL_PATH="/hpcwork/qj474765/runs/checkpoints_2025_08_10_013619_VinDr-Mammo_ark_multi_view"
 OUTPUT_PATH="/hpcwork/rwth1833/experiments/"
-BATCH_SIZE=4 #32
+BATCH_SIZE=16 #4
 ATTENTION_THRESHOLD=0.6
 SAVE_HEADS="mean"
-EXTRA_ARGS="--optimize-compute" # --show-attention --attention-threshold $ATTENTION_THRESHOLD --save-heads $SAVE_HEADS --compute-rollout"   # Add any extra args here
+EXTRA_ARGS="--optimize-compute" #--show-attention --attention-threshold $ATTENTION_THRESHOLD --save-heads $SAVE_HEADS --compute-rollout"   # Add any extra args here
 
 # Run your program
 python rad_dino/run/inference.py \
@@ -38,5 +38,4 @@ python rad_dino/run/inference.py \
     --model-path $MODEL_PATH \
     --output-path $OUTPUT_PATH \
     --batch-size $BATCH_SIZE \
-    --fusion-type "mean" \
     $EXTRA_ARGS

@@ -8,7 +8,7 @@ from transformers import AutoImageProcessor
 from typing import Optional, Callable
 from PIL import Image
 from torch.utils.data import Dataset
-from rad_dino.utils.preprocessing_utils import dicom2array
+from rad_dino.utils.preprocessing_utils import dicom2array, uint16_to_uint8
 from rad_dino.utils.config_utils import get_model_config
 from rad_dino.loggings.setup import init_logging
 init_logging()
@@ -88,42 +88,65 @@ class RadImageClassificationDataset(Dataset):
         if self.task == "multilabel":
             targets = self.df.loc[sample_id].to_numpy(dtype=np.float32)
             targets = torch.tensor(targets, dtype=torch.float32)
-        else:
+        elif self.task == "binary":
+            # For binary classification, BCEWithLogitsLoss expects target shape [B, 1] and float dtype
+            target_value = self.df.loc[sample_id, "label"]
+            targets = torch.tensor(target_value, dtype=torch.float32).unsqueeze(0)
+        else:  # multiclass
             target_value = self.df.loc[sample_id, "label"]
             targets = torch.tensor(target_value, dtype=torch.long)  
         
         if self.multi_view:
             # Load 4 images for multi-view mammography
-            images = self._load_multi_view_images(sample_id)  # List of 4 images
+            pil_images = self._load_multi_view_images(sample_id)  # List of 4 images
             
             if self.transform:
                 # Apply transforms to each view separately 
                 transformed_images = []
-                for view_img in images: 
-                    transformed_image = self.transform(view_img)
+                for view_img in pil_images: 
+                    transformed_image = self.transform(view_img.convert("RGB"))
                     transformed_images.append(transformed_image)
                 
                 # Stack transformed views: [4, C, H, W]
                 imgs = torch.stack(transformed_images, dim=0)
             else:
-                # If no data augmentation is applied
-                # Use AutoImageProcessor to process the images
-                pil_images = [Image.fromarray(img) for img in images]
+                # If no data augmentation is applied, use AutoImageProcessor to process the images               
+                # Ensure 3-channel RGB for processors that expect 3 channels
+                pil_images = [img.convert("RGB") for img in pil_images]
                 imgs = self.image_processor(pil_images, return_tensors="pt")["pixel_values"]
                 # Remove batch dimension from AutoImageProcessor output
                 imgs = imgs.squeeze(0)  # [1, 4, C, H, W] -> [4, C, H, W]
         else:
             # Load single image
-            dicom_file = os.path.join(self.dicom_root, f"{sample_id}.dcm")
-            img = dicom2array(dicom_file)
+            # extension check (.dcm, .png, .jpg, .jpeg)
+            extensions = ['.dcm', '.dicom', '.png', '.jpg', '.jpeg']
+            img_path = None
+            
+            for ext in extensions:
+                path = os.path.join(self.dicom_root, f"{sample_id}{ext}")
+                if os.path.exists(path):
+                    img_path = path
+                    break
+            
+            if img_path is None:
+                raise FileNotFoundError(
+                    f"No image found for id {sample_id} in {self.dicom_root} with extensions {extensions}"
+                )
+            
+            # Load image based on extension
+            if img_path.endswith('.dcm') or img_path.endswith('.dicom'):
+                img = dicom2array(img_path)
+                pil_image = Image.fromarray(img)
+            else:
+                # PNG/JPG/JPEG: load with PIL and convert to RGB
+                pil_image = uint16_to_uint8(img_path)
 
             if self.transform:
-                imgs = self.transform(img)
+                imgs = self.transform(pil_image.convert("RGB"))
             else:
-                # If no data augmentation is applied
-                # Use AutoImageProcessor to process the images
-                pil_image = Image.fromarray(img)
-                imgs = self.image_processor(pil_image, return_tensors="pt")["pixel_values"]
+                # If no data augmentation is applied, use AutoImageProcessor to process the images
+                # Ensure 3-channel RGB for processors that expect 3 channels    
+                imgs = self.image_processor(pil_image.convert("RGB"), return_tensors="pt")["pixel_values"]
                 # Remove batch dimension from AutoImageProcessor output
                 imgs = imgs.squeeze(0)  # [1, C, H, W] -> [C, H, W]
         return imgs, targets, sample_id
@@ -136,27 +159,42 @@ class RadImageClassificationDataset(Dataset):
             study_id: The study identifier
             
         Returns:
-            list: List of 4 individual images as numpy arrays
+            pil_images: list of PIL images
         """
         study_dir = os.path.join(self.dicom_root, study_id)
         
         # Define the expected view files (Left CC, Left MLO, Right CC, Right MLO)
-        view_files = ['L_CC.dcm', 'L_MLO.dcm', 'R_CC.dcm', 'R_MLO.dcm']
+        view_names = ['L_CC', 'L_MLO', 'R_CC', 'R_MLO']
+        extensions = ['.dcm', '.dicom', '.png', '.jpg', '.jpeg']
         
-        # Initialize list to store individual images
-        images = []
+        # Initialize lists to store images
+        pil_images = []
         
-        for view_file in view_files:
-            view_path = os.path.join(study_dir, view_file)
+        for view_name in view_names:
+            # Try to find the view file with different extensions
+            view_path = None
+            for ext in extensions:
+                path = os.path.join(study_dir, f"{view_name}{ext}")
+                if os.path.exists(path):
+                    view_path = path
+                    break
             
-            if not os.path.exists(view_path):
-                raise FileNotFoundError(f"Multi-view image not found: {view_path}")
+            if view_path is None:
+                raise FileNotFoundError(
+                    f"Multi-view image not found for {view_name} in {study_dir} with extensions {extensions}"
+                )
             
-            # Load the view
-            view_img = dicom2array(view_path)
-            images.append(view_img)
+            # Load the view based on extension
+            if view_path.endswith('.dcm') or view_path.endswith('.dicom'):
+                view_img = dicom2array(view_path)
+                view_pil = Image.fromarray(view_img)
+            else:
+                # PNG/JPG/JPEG: load with PIL and convert to numpy array
+                view_pil = uint16_to_uint8(view_path)
+            
+            pil_images.append(view_pil)
         
-        return images
+        return pil_images
     
 
 if __name__ == "__main__":
@@ -192,3 +230,12 @@ if __name__ == "__main__":
     print(f"Number of training studies: {len(ds_train.sample_ids)}")
     print(f"Number of test studies: {len(ds_test.sample_ids)}")
     print(f"Labels: {set(ds_train.labels)}")
+    
+    path_root = "/hpcwork/rwth1833/datasets/preprocessed/TAIX-Ray"
+    class_labels = ["Cardiomegaly", "Pulmonary congestion", "Pleural effusion", "Pulmonary opacities", "Atelectasis"]
+    ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", model_name="rad-dino")
+    ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", model_name="rad-dino")
+    print("TAIX-Ray...")
+    assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
+    print(f"Number of training data: {len(ds_train.sample_ids)}")
+    print(f"Number of test data: {len(ds_test.sample_ids)}")

@@ -1,7 +1,12 @@
 import torch
 import torch.nn as nn 
 import torch.nn.functional as F
+import logging
 from typing import Callable, Optional
+from rad_dino.loggings.setup import init_logging
+init_logging()
+logger = logging.getLogger(__name__)
+
 
 class DinoClassifier(nn.Module):
     def __init__(self, 
@@ -11,7 +16,9 @@ class DinoClassifier(nn.Module):
                  num_views: Optional[int] = None,
                  view_fusion_type: Optional[str] = None,
                  adapter_dim: Optional[int] = None,
-                 view_fusion_hidden_dim: Optional[int] = None):
+                 view_fusion_hidden_dim: Optional[int] = None,
+                 return_attentions: bool = False,
+                 gradient_checkpointing: bool = False):
         """
         Initialize the DINO classifier.
         
@@ -26,11 +33,14 @@ class DinoClassifier(nn.Module):
                 - "mlp_adapter": MLP-based feature adaptation and fusion
             adapter_dim: Hidden dimension for MLP adapters (only used if multi_view=True and fusion_type="mlp_adapter")
             view_fusion_hidden_dim: Hidden dimension for fusion MLP (only used if multi_view=True and fusion_type="mlp_adapter")
+            return_attentions: Whether to return attention maps
+            gradient_checkpointing: Whether to enable gradient checkpointing for memory optimization
         """
         super().__init__()
         self.backbone = backbone
         self.num_classes = num_classes
         self.multi_view = multi_view
+        self.return_attentions = return_attentions
         self.embed_dim = backbone.config.hidden_size
         
         # Initialize classification head 
@@ -43,6 +53,32 @@ class DinoClassifier(nn.Module):
         # Initialize strategy dictionaries for branch-free dispatch
         self._init_strategy_dictionaries(view_fusion_type)
         
+        # Enable gradient checkpointing if requested
+        if gradient_checkpointing:
+            self.enable_gradient_checkpointing()
+    
+    def enable_gradient_checkpointing(self):
+        """
+        Enable gradient checkpointing for memory optimization.
+        This trades compute for memory by not storing all intermediate activations.
+        """
+        try:
+            # Enable gradient checkpointing on the main backbone
+            self.backbone.gradient_checkpointing_enable()
+            logger.info("Enabled gradient checkpointing on DINO backbone")
+        except Exception as e:
+            logger.warning(f"Failed to enable gradient checkpointing: {e}")
+    
+    def disable_gradient_checkpointing(self):
+        """
+        Disable gradient checkpointing.
+        """
+        try:
+            self.backbone.gradient_checkpointing_disable()
+            logger.info("Gradient checkpointing disabled for DINO model")
+        except Exception as e:
+            logger.warning(f"Failed to disable gradient checkpointing: {e}")
+
     def _init_multi_view_components(self, 
                                     num_views: int, 
                                     view_fusion_type: str | None, 
@@ -329,7 +365,7 @@ class DinoClassifier(nn.Module):
         # Process through backbone (unified path)
         outputs = self.backbone(
             x_reshaped,
-            output_attentions=True,
+            output_attentions=self.return_attentions,
             return_dict=True,
         )
         
@@ -347,10 +383,12 @@ class DinoClassifier(nn.Module):
         logits = self.head(fused_features)
         
         # Handle attention maps
-        attentions = outputs.attentions
-        stacked_attns = torch.stack(attentions, dim=0)
-        stacked_attns = self.attention_reshape_strategies[self.multi_view](stacked_attns, batch_size, num_views)
-        
+        if self.return_attentions and hasattr(outputs, "attentions") and outputs.attentions is not None:
+            attentions = outputs.attentions
+            stacked_attns = torch.stack(attentions, dim=0)
+            stacked_attns = self.attention_reshape_strategies[self.multi_view](stacked_attns, batch_size, num_views)
+        else:
+            stacked_attns = None
         return logits, stacked_attns
     
 if __name__ == "__main__":
@@ -375,6 +413,9 @@ if __name__ == "__main__":
     
     # Initialize the classifier with the backbone
     model = DinoClassifier(backbone, num_classes=10)
+    
+    # Initialize with gradient checkpointing for memory optimization
+    model_with_grad_ckpt = DinoClassifier(backbone, num_classes=10, gradient_checkpointing=True)
     
     # Verify the number of transformer layers
     num_layers = model.backbone.config.num_hidden_layers

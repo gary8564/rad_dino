@@ -1,8 +1,9 @@
 import numpy as np
 import pydicom
-from pydicom.pixels import apply_voi_lut
 import matplotlib.pyplot as plt
 import cv2
+from pydicom.pixels import apply_rescale, apply_voi_lut
+from PIL import Image
 
 def dicom2array(path, voi_lut = True, fix_monochrome = True):
     """
@@ -31,6 +32,8 @@ def dicom2array(path, voi_lut = True, fix_monochrome = True):
 
         # Apply VOI LUT if requested and available to transform raw DICOM data to "human-friendly" view
         if voi_lut:
+            data = dicom.pixel_array
+            data = apply_rescale(data, dicom) 
             data = apply_voi_lut(dicom.pixel_array, dicom)
         else:
             data = dicom.pixel_array
@@ -125,3 +128,24 @@ def draw_bboxes(img, tl, br, rgb, label="", label_location="tl", opacity=0.1, li
                           FONT, FONT_SCALE, rgb, FONT_THICKNESS, FONT_LINE_TYPE)
     
     return img
+
+def uint16_to_uint8(img_path):
+    """
+    Convert a 16-bit grayscale image to 8-bit grayscale image.
+
+    Args:
+        img_path: path to the image
+
+    Returns:
+        Image: 8-bit grayscale image
+    """
+    img = Image.open(img_path)
+    # Read as grayscale
+    if img.mode in ("I;16", "I"):
+        img_arr = np.array(img, dtype=np.float32)             # 16-bit -> float
+        img_arr = img_arr - img_arr.min()
+        denom = max(1e-6, img_arr.max())
+        img_arr = (img_arr / denom * 255.0).astype(np.uint8)  # min-max to [0,255]
+        return Image.fromarray(img_arr, mode="L")
+    else:
+        return img.convert("L")  # already 8-bit; ensure grayscale

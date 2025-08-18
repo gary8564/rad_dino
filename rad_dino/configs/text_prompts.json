@@ -33,5 +33,19 @@
             "a chest x-ray image showing normal lungs",
             "a chest x-ray image showing pneumonia"
         ]
+    },
+    "TAIX-Ray": {
+        "multilabel": [
+            "a chest x-ray image with cardiomegaly",
+            "a chest x-ray image with pleural effusion",
+            "a chest x-ray image with pulmonary congestion",
+            "a chest x-ray image with pulmonary opacities",
+            "a chest x-ray image with atelectasis",
+            "a chest x-ray image with no finding"
+        ], 
+        "binary": [
+            "a normal chest x-ray image",
+            "an abnormal chest x-ray image"
+        ]
     }
 }

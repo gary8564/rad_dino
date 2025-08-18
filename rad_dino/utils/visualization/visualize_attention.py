@@ -3,14 +3,16 @@ import random
 import colorsys
 import numpy as np
 import cv2
+import torch
+import torch.nn as nn
+import os
+import logging
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon  
 from skimage.measure import find_contours
-import torch
-import torch.nn as nn
+from skimage.io import imread
 from torchvision.transforms import ToPILImage
-import os
-import logging
+from typing import Union
 from rad_dino.loggings.setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
@@ -176,7 +178,8 @@ def _process_attentions_per_image(
         w_featmap, h_featmap: Feature map dimensions
         patch_size: Patch size of the vision transformer
         threshold: Threshold for attention masking
-        head_fusion: How to handle attention heads - "mean", "max", "min" for fusion across heads
+        head_fusion: How to handle attention heads - "mean", "max", "min" for fusion across heads 
+                     or int k to save k random per-head overlays
         compute_rollout: Whether to compute attention rollout in addition to raw attention maps
         all_layer_attentions: Attentions from all layers for rollout computation
         rollout_discard_ratio: Ratio of lowest attention values to discard in rollout computation (0-1, default: 0.9)
@@ -256,7 +259,7 @@ def _process_attentions_per_image(
         raise ValueError(f"Head fusion type '{head_fusion}' not supported. Use 'mean', 'max', 'min' or an integer for random selection.")
     
     # Read the saved original image for visualization
-    original_image = skimage.io.imread(os.path.join(image_output_dir, "original.png"))
+    original_image = imread(os.path.join(image_output_dir, "original.png"))
     if original_image.shape[2] == 4:  # Remove alpha channel if present
         original_image = original_image[:, :, :3]
     
@@ -327,7 +330,7 @@ def visualize_attention_maps(
     image_std,
     patch_size=14, 
     threshold=0.6, 
-    head_fusion: str = "mean",
+    head_fusion: Union[str, int] = "mean",
     compute_rollout: bool = False,
     rollout_discard_ratio: float = 0.9,
     ):
@@ -346,6 +349,7 @@ def visualize_attention_maps(
         patch_size: Patch size of the vision transformer (default: 14 for dinov2-base)
         threshold: Threshold for attention masking (default: 0.6)
         head_fusion: How to handle attention heads - "mean", "max", "min" for fusion across heads
+                     or int k to save k random per-head overlays
         compute_rollout: Whether to compute attention rollout in addition to raw attention maps
         rollout_discard_ratio: Ratio of lowest attention values to discard in rollout computation (0-1, default: 0.9)
     """
@@ -426,7 +430,6 @@ def visualize_attention_maps(
                 compute_rollout, all_layer_attentions, rollout_discard_ratio
             )
         
-        # Log progress every 10 images to avoid spam
         if (idx + 1) % 10 == 0 or idx == batch_size - 1:
             logger.info(f"Processed attention maps: {idx + 1}/{batch_size} images")
     

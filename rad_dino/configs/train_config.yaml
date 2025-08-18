@@ -1,12 +1,12 @@
 # Single-view image
-batch_size: 20 
+batch_size: 20
 # Multi-view image
 # batch_size: 4
-epochs: 100
+epochs: 10
 optim:
-  base_lr: 5e-5 #3e-5
+  base_lr: 1e-5 #3e-5
   weight_decay: 0.001 
-lr_scheduler:
-  warmup_ratio: 0.10
-# early_stopping: 
-#   patience: 10
+#lr_scheduler:
+#  warmup_ratio: 0.10
+early_stopping:
+  patience: 10

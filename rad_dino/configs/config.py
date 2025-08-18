@@ -68,7 +68,6 @@ class InferenceConfig:
     model_path: str
     output_path: str
     batch_size: int = 16
-    fusion_type: str = 'mean'
     multi_view: bool = False
     optimize_compute: bool = False
     show_attention: bool = False

@@ -63,15 +63,21 @@ DATASET_LABEL_ALIASES: Dict[str, Dict[str, List[str]]] = {
         "pleural effusion": ["effusion", "pleural effusion"],
         "pleural thickening": ["pleural thickening"],
         "lung opacity": ["lung opacity"],
-        "pulmonary fibrosis": ["pulmonary fibrosis"],
+        "pulmonary fibrosis": ["pulmonary fibrosis", "fibrosis"],
         "tuberculosis": ["tuberculosis"],
         "aortic enlargement": ["enlarged cardiomediastinum"],
     },
     "RSNA-Pneumonia": {
         "pneumonia": ["pneumonia"]
+    },
+    "TAIX-Ray": {
+        "cardiomegaly": ["cardiomegaly"],
+        "pulmonary congestion": ["pulmonary edema", "edema"],
+        "pleural effusion": ["pleural effusion", "effusion"],
+        "pulmonary opacities": ["lung opacity"],
+        "atelectasis": ["atelectasis"]
     }
 }
-
 
 
 

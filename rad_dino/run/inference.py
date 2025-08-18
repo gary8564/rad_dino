@@ -47,8 +47,6 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--model-path', required=True, type=str)
     parser.add_argument('--output-path', required=True, type=str)
     parser.add_argument('--batch-size', type=int, default=16)
-    parser.add_argument('--fusion-type', type=str, default='mean', 
-                       choices=['mean', 'weighted_mean', 'mlp_adapter']) 
     parser.add_argument('--multi-view', action='store_true', 
                        help="Enable multi-view processing for mammography data")
     parser.add_argument("--optimize-compute", action="store_true",
@@ -131,11 +129,10 @@ def determine_class_info(config: InferenceConfig, dataset: RadImageClassificatio
     
     return class_labels, num_classes
 
-def setup_data_loader(config: InferenceConfig, repo: str, accelerator: Accelerator) -> tuple[RadImageClassificationDataset, DataLoader]:
+def setup_data_loader(config: InferenceConfig, accelerator: Accelerator) -> tuple[RadImageClassificationDataset, DataLoader]:
     """Setup dataset and data loader
     Args:
         config: Inference configuration
-        repo: Model repository name for image processor
         accelerator: Accelerator for distributed computing
         
     Returns:
@@ -148,7 +145,7 @@ def setup_data_loader(config: InferenceConfig, repo: str, accelerator: Accelerat
     data_root_folder = data_config.get_data_root_folder(config.multi_view)
 
     # Setup transforms
-    _, test_transforms = get_transforms(repo)
+    _, test_transforms = get_transforms(config.model)
 
     # Create test dataset and data loader
     test_loader = create_test_loader(
@@ -166,9 +163,8 @@ def setup_model(config: InferenceConfig, repo: str, num_classes: int,
                               accelerator: Accelerator) -> Any:
     """Setup model"""
     # Load model
-    model_wrapper = load_model(config.model_path, repo, num_classes, accelerator, 
-                              config.show_gradcam, config.show_lrp, config.multi_view, 
-                              config.fusion_type, model_type=config.model)
+    model_wrapper = load_model(config.model_path, config.model, repo, num_classes, accelerator, 
+                              config.show_gradcam, config.show_attention, config.show_lrp, config.multi_view)
 
     # Validate ONNX multi-view compatibility
     if config.multi_view and model_wrapper.model_type == 'onnx':
@@ -285,7 +281,6 @@ def main():
         model_path=args.model_path,
         output_path=args.output_path,
         batch_size=args.batch_size,
-        fusion_type=args.fusion_type,
         multi_view=args.multi_view,
         optimize_compute=args.optimize_compute,
         show_attention=args.show_attention,
@@ -309,7 +304,7 @@ def main():
     logger.info(f"Running inference with multi_view={config.multi_view}")
     
     # Setup data loader and dataset
-    test_dataset, test_loader = setup_data_loader(config, repo, accelerator)
+    test_dataset, test_loader = setup_data_loader(config, accelerator)
     
     # Determine class information for model setup
     class_labels, num_classes = determine_class_info(config, test_dataset)
@@ -319,7 +314,7 @@ def main():
 
     # Setup output directories
     modelname = config.model_path.rsplit('/', 1)[-1]
-    output_path = os.path.join(CURR_DIR, config.output_path, config.data, modelname)
+    output_path = os.path.join(config.output_path, config.data, modelname)
     if accelerator.is_main_process:
         os.makedirs(output_path, exist_ok=True)
     

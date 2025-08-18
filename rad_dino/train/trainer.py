@@ -18,8 +18,11 @@ logger = logging.getLogger(__name__)
 
 # Define model-specific input sizes
 MODEL_INPUT_SIZES = {
-    "rad_dino": (518, 518),  # RadDINO expects 518x518
-    "dinov2": (224, 224)     # DINOv2 expects 224x224
+    "rad-dino": (518, 518),  # RadDINO expects 518x518
+    "dinov2-base": (224, 224),     # DINOv2 expects 224x224
+    "dinov2-small": (224, 224),     # DINOv2 expects 224x224
+    "medsiglip": (448, 448),    # MedSigLIP expects 448x448
+    "ark": (768, 768)    # Ark expects 768x768
 }
 
 
@@ -532,32 +535,34 @@ class Trainer:
                                 logger.error(f"Failed to save checkpoint: {e}")
                                 raise
             
-            # Load best model for this fold
-            if early_stopper and self.accelerator.is_main_process:
-                try:
-                    best_model = early_stopper.load_best_model(kfold.model)
-                except (RuntimeError, FileNotFoundError) as e:
-                    logger.warning(f"Failed to load best model checkpoint: {e}. Using current model instead.")
-                    best_model = kfold.model
-            else:
-                # Load best model checkpoint when not using early stopping
-                if self.accelerator.is_main_process and os.path.exists(kfold.best_checkpoint):
-                    # Load the best checkpoint
-                    ckpt = torch.load(kfold.best_checkpoint, map_location='cpu')
-                    kfold.model.load_state_dict(ckpt["model_state"])
-                    best_model = kfold.model
-                    logger.info(f"{log_prefix}Loaded best model checkpoint with AUPRC={ckpt.get('best_metric', 'N/A'):.4f}")
-                else:
-                    # Fallback to current model if no checkpoint exists
-                    logger.warning("No best model checkpoint found. Using current model instead.")
-                    best_model = kfold.model
+            # Load best model for this fold on all ranks for consistency
+            try:
+                ckpt = torch.load(kfold.best_checkpoint, map_location='cpu')
+                self.accelerator.unwrap_model(kfold.model).load_state_dict(ckpt["model_state"])
+                best_model = kfold.model
+                if self.accelerator.is_main_process:
+                    logger.info(f"{log_prefix}Loaded best model checkpoint with AUPRC={ckpt['best_metric']:.4f}")
+            except Exception as e:
+                # Fallback to current model if no checkpoint exists
+                logger.warning(f"{log_prefix}Failed to load best model checkpoint: {e}. Using current model instead.")
+                best_model = kfold.model
+                
+            # Ensure all ranks are synchronized
+            self.accelerator.wait_for_everyone()
+
+            # If the training loop was skipped (e.g., start_epoch >= num_epochs),
+            if kfold.start_epoch >= num_epochs:
+                if self.accelerator.is_main_process:
+                    logger.warning(
+                        f"{log_prefix}Start epoch ({kfold.start_epoch}) >= num_epochs ({self.train_config.epochs}). Skipping training."
+                    )
+                if not isinstance(kfold.best_metric, (int, float)):
+                    _, _, _, eval_ap, _ = self.eval_per_epoch(kfold.model, kfold.val_loader)
+                    kfold.best_metric = eval_ap
             
             # Track fold results
             kfold_results.append({
                 "fold": fold_idx or "single",
-                "val_loss": val_loss,
-                "val_acc": val_acc,
-                "val_f1": val_f1,
                 "val_ap": kfold.best_metric
             })
             
@@ -588,7 +593,7 @@ class Trainer:
             model.eval()
             
             # Get input size for the model
-            input_size = MODEL_INPUT_SIZES.get(model_name, (224, 224))  # Default to 224x224
+            input_size = MODEL_INPUT_SIZES[model_name]
             device = "cpu"
             
             # Check if model is multi-view and create appropriate dummy input
@@ -598,6 +603,33 @@ class Trainer:
             else:
                 dummy_input = torch.randn(1, 3, *input_size, device=device)  # [B, C, H, W]
                 logger.info(f"Exporting ONNX model for single-view with input shape: {dummy_input.shape}")
+                        
+            # Check if model supports attention maps
+            if hasattr(model, 'return_attentions'):
+                # DINO and MedSigLIP models
+                include_attentions = model.return_attentions
+            elif hasattr(model, 'backbone') and hasattr(model.backbone, 'return_attention'):
+                # Ark models
+                include_attentions = model.backbone.return_attention
+            else:
+                include_attentions = False
+            
+            # Build output configuration
+            if include_attentions:
+                output_names = ["logits", "all_attentions"]
+                dynamic_axes = {
+                    "pixel_values": {0: "batch_size"},   # batch dimension of input is dynamic
+                    "logits": {0: "batch_size"},         # batch dimension of output is dynamic
+                    "all_attentions": {1: "batch_size"}, # batch dimension of output is dynamic
+                }
+            else:
+                output_names = ["logits"]
+                dynamic_axes = {
+                    "pixel_values": {0: "batch_size"}, # batch dimension of input is dynamic
+                    "logits": {0: "batch_size"},       # batch dimension of output is dynamic
+                }
+            
+            logger.info(f"ONNX export configuration: {len(output_names)} outputs - {output_names}")
             
             # Export the model
             onnx_path = os.path.join(self.checkpoint_dir, "best.onnx")
@@ -609,12 +641,8 @@ class Trainer:
                 opset_version=17,             # the ONNX version to export the model to
                 do_constant_folding=True,     # whether to execute constant folding for optimization
                 input_names=["pixel_values"], # the model's input names
-                output_names=["logits", "all_attentions"],      # the model's output names
-                dynamic_axes={                # (Optional) allow dynamic batch sizes
-                    "pixel_values": {0: "batch_size"},   # batch dimension of input is dynamic
-                    "logits": {0: "batch_size"},         # batch dimension of output is dynamic
-                    "all_attentions": {1: "batch_size"}, # batch dimension of output is dynamic
-                },
+                output_names=output_names,    # the model's output names
+                dynamic_axes=dynamic_axes,    # (Optional) allow dynamic batch sizes
                 verbose=True                  # Enable verbose mode for debugging
             )
             logger.info(f"Successfully exported the best model to onnx model at {onnx_path}!")

@@ -43,7 +43,8 @@ dependencies = [
     "opencv-python==4.11.0.86",
     "scikit-image==0.25.2",
     "seaborn==0.13.2",
-    "supervision==0.25.1"
+    "supervision==0.25.1",
+    "sentencepiece==0.2.0"
 ]
 
 [tool.setuptools.packages.find]
