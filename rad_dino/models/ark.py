@@ -163,6 +163,9 @@ class SwinTransformer(swin.SwinTransformer):
         for num_classes in self.num_classes_list:
             self.omni_heads.append(nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity())
         self.omni_heads = nn.ModuleList(self.omni_heads)
+        # Freeze omni_heads so they don't participate in grads during downstream training
+        for p in self.omni_heads.parameters():
+            p.requires_grad = False
         
         # Replace all transformer blocks with attention-enabled versions
         if self.return_attention:

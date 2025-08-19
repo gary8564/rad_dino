@@ -2,10 +2,6 @@ VinDr-CXR:
   data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR"
   num_workers: 4
 
-CANDID-PTX:
-  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/CANDID-PTX"
-  num_workers: 4
-
 RSNA-Pneumonia:
   data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/RSNA-Pneumonia"
   num_workers: 4

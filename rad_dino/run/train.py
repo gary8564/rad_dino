@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 import torch 
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from torch.utils.data import Subset
 import wandb
 
@@ -306,9 +307,11 @@ def main(args):
         raise ValueError("Ark checkpoint path must be specified for Ark model. Use --pretrained-ark-path argument.")
     if args.use_bf16 and not args.optimize_compute:
         raise ValueError("`--use-bf16` is only supported when `--optimize-compute` is enabled.")
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True, gradient_as_bucket_view=True)
     accelerator = Accelerator(
         mixed_precision="bf16" if args.use_bf16 else "fp16" if args.optimize_compute else "no",
         gradient_accumulation_steps=args.grad_accumulation_steps,
+        kwargs_handlers=[ddp_kwargs],
     )
     
     # Create both output and checkpoint directories

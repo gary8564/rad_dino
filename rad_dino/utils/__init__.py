@@ -6,7 +6,8 @@ from .loss_utils import get_class_weights
 from .metrics.compute_metrics import compute_evaluation_metrics
 from .config_utils import setup_configs, get_model_config
 from .plot_benchmark import visualize_benchmark_results, visualize_evaluate_metrics
-from .visualization.visualize_attention import visualize_attention_maps
+from .visualization.visualize_vit_attention import visualize_attention_maps as visualize_vit_attention_maps
+from .visualization.visualize_siglip_attention import visualize_siglip_attention_maps
 from .visualization.visualize_gradcam import visualize_gradcam
 from .visualization.visualize_lrp import visualize_lrp_maps
 from .metrics.dice_score import compute_dice_score_per_image, plot_annotated_bbox

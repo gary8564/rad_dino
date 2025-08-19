@@ -1,7 +1,8 @@
 import torch
 from typing import Optional, List, Union, Any
 from accelerate import Accelerator
-from rad_dino.utils.visualization.visualize_attention import visualize_attention_maps
+from rad_dino.utils.visualization.visualize_vit_attention import visualize_attention_maps as visualize_vit_attention_maps
+from rad_dino.utils.visualization.visualize_siglip_attention import visualize_siglip_attention_maps
 from rad_dino.utils.visualization.visualize_swin_attention import visualize_swin_attention_maps
 from rad_dino.utils.visualization.visualize_lrp import visualize_lrp_maps
 from rad_dino.utils.visualization.visualize_gradcam import visualize_gradcam
@@ -123,14 +124,34 @@ class ExplainableVisualizer:
                 threshold=attention_threshold,
             )
         else:
-            # Use ViT/DINO visualizer for stacked tensor attention maps
-            patch_size = getattr(backbone_config, 'patch_size', DEFAULT_PATCH_SIZE)
-            visualize_attention_maps(
-                attentions, images, image_ids, self.output_paths.attention, 
-                self.accelerator, self.image_mean, self.image_std, 
-                patch_size=patch_size, threshold=attention_threshold, 
-                head_fusion=save_heads_param, 
-                compute_rollout=compute_rollout, rollout_discard_ratio=0.9)
+            # Route between DINO-like (ViT with CLS) and SigLIP (ViT w/o CLS, MAP pooling)
+            is_siglip = hasattr(backbone_config, "vision_config") and (
+                "siglip" in (getattr(backbone_config, "model_type", "") or "").lower()
+                or "siglip" in (getattr(getattr(backbone_config, "vision_config", object()), "model_type", "") or "").lower()
+            )
+            # Determine patch size
+            patch_size = None
+            if hasattr(backbone_config, 'patch_size'):
+                patch_size = getattr(backbone_config, 'patch_size')
+            elif hasattr(backbone_config, 'vision_config') and hasattr(backbone_config.vision_config, 'patch_size'):
+                patch_size = getattr(backbone_config.vision_config, 'patch_size')
+            else:
+                patch_size = DEFAULT_PATCH_SIZE
+
+            if is_siglip:
+                visualize_siglip_attention_maps(
+                    attentions, images, image_ids, self.output_paths.attention,
+                    self.accelerator, self.image_mean, self.image_std,
+                    patch_size=patch_size, threshold=attention_threshold,
+                    head_fusion=save_heads_param,
+                    compute_rollout=compute_rollout, rollout_discard_ratio=0.9)
+            else:
+                visualize_vit_attention_maps(
+                    attentions, images, image_ids, self.output_paths.attention, 
+                    self.accelerator, self.image_mean, self.image_std, 
+                    patch_size=patch_size, threshold=attention_threshold, 
+                    head_fusion=save_heads_param, 
+                    compute_rollout=compute_rollout, rollout_discard_ratio=0.9)
     
     def run_lrp_visualization(self, model, images: torch.Tensor, 
                              image_ids: List[str], multi_view: bool) -> None:

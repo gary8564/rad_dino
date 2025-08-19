@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from typing import Dict, List, Tuple, Optional, Union
 from skimage.io import imread
-from rad_dino.utils.visualization.visualize_attention import _display_instances
+from rad_dino.utils.visualization.visualize_vit_attention import _display_instances
 
 logger = logging.getLogger(__name__)
 
