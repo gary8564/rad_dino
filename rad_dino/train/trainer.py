@@ -4,7 +4,7 @@ import logging
 import math
 import numpy as np
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import wandb
 from torch.amp import autocast, GradScaler
 from transformers import get_cosine_schedule_with_warmup
@@ -181,9 +181,12 @@ class Trainer:
             logger.debug("No new backbone parameters to add to optimizer")
 
     def train_per_epoch(self, curr_epoch, model, data_loader, optimizer, scheduler, log_prefix):
-        n_steps_per_epoch = math.ceil(len(data_loader.dataset) / self.train_config.batch_size)
+        # steps per epoch = number of optimizer updates per rank
+        n_steps_per_epoch = math.ceil(len(data_loader) / self.accelerator.gradient_accumulation_steps)
+        update_steps = 0
         model.train()
         running_loss = torch.tensor(0.0, device=self.accelerator.device)
+        n_samples = torch.tensor(0, device=self.accelerator.device)
         # Accumulate predictions and labels for epoch-level metrics
         preds, trues = [], []
         # Enable anomaly detection for debugging NaN issues
@@ -203,14 +206,16 @@ class Trainer:
                 # Backward pass and gradient clipping
                 self.accelerator.backward(loss)
                 if self.accelerator.sync_gradients:  # Only clip when gradients are synced
+                    update_steps += 1
                     self.accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0) 
-                optimizer.step()
-                if scheduler:
-                    scheduler.step()
-                optimizer.zero_grad()
+                    optimizer.step()
+                    if scheduler:
+                        scheduler.step()
+                    optimizer.zero_grad()
             
             # Accumulate loss
-            running_loss += loss.item()
+            n_samples += labels.shape[0]
+            running_loss += loss.item() * labels.shape[0]
             
             # Accumulate predictions and labels for epoch-level metrics
             preds.append(outputs.detach())
@@ -218,17 +223,17 @@ class Trainer:
             
             if i % 10 == 0 and self.accelerator.is_main_process:
                 current_lr = scheduler.get_last_lr()[0] if scheduler else self.train_config.optim.base_lr
+                global_step = curr_epoch * n_steps_per_epoch + update_steps
                 wandb.log({
                     f"train/{log_prefix}loss_step": loss.item(),
-                    f"trainer/{log_prefix}global_step": (i + 1 + (n_steps_per_epoch * curr_epoch)) / n_steps_per_epoch,
+                    f"trainer/{log_prefix}global_step": global_step,
                     f"{log_prefix}lr": current_lr
                 })
         
-        # compute local average loss
-        avg_loss_local = running_loss / len(data_loader)
-        # reduce to get global average loss
-        loss_tensor = torch.tensor(avg_loss_local, device=self.accelerator.device)
-        avg_loss = self.accelerator.reduce(loss_tensor, reduction="mean").item()
+        # Compute global average loss
+        total_loss = self.accelerator.reduce(running_loss, reduction="sum")
+        total_samples = self.accelerator.reduce(n_samples, reduction="sum")
+        avg_loss = (total_loss / total_samples).item()
         
         # Compute epoch-level metrics on all accumulated predictions and labels
         preds = self.accelerator.gather_for_metrics(torch.cat(preds))
@@ -238,23 +243,15 @@ class Trainer:
         acc_metric = self.eval_metrics["classification"]["acc"]
         auroc_metric = self.eval_metrics["classification"]["auroc"]
         
-        if self.accelerator.is_main_process:
-            avg_acc = acc_metric(preds, trues)
-            avg_auroc = auroc_metric(preds, trues)
-        else:
-            # dummy tensors so every rank has something to reduce
-            avg_acc = torch.tensor(0.0, device=self.accelerator.device)
-            avg_auroc = torch.tensor(0.0, device=self.accelerator.device)
-        
-        # Broadcast metrics to all processes
-        avg_acc = self.accelerator.reduce(avg_acc, reduction="mean").item()
-        avg_auroc = self.accelerator.reduce(avg_auroc, reduction="mean").item()
+        avg_acc = acc_metric(preds, trues).item()
+        avg_auroc = auroc_metric(preds, trues).item()
         
         return avg_loss, avg_acc, avg_auroc
 
     def eval_per_epoch(self, model, data_loader):
         model.eval()
-        local_val_loss = 0
+        eval_loss = torch.tensor(0.0, device=self.accelerator.device)
+        n_samples = torch.tensor(0, device=self.accelerator.device)
         preds, trues = [], []
         with torch.no_grad():
             for data in data_loader:
@@ -262,43 +259,30 @@ class Trainer:
                 labels = data["labels"]
                 predictions, _ = model(images)
                 loss = self.criterion(predictions, labels)
-                local_val_loss += loss.item()
+                n_samples += labels.shape[0]
+                eval_loss += loss.item() * labels.shape[0]
                 preds.append(predictions.detach())
                 trues.append(labels.detach())
         
-        # compute local average loss
-        avg_loss_local = local_val_loss / len(data_loader)
-        # reduce to get global average loss
-        loss_tensor = torch.tensor(avg_loss_local, device=self.accelerator.device)
-        avg_loss = self.accelerator.reduce(loss_tensor, reduction="mean").item()
+        # Compute to get global average loss
+        total_loss = self.accelerator.reduce(eval_loss, reduction="sum")
+        total_samples = self.accelerator.reduce(n_samples, reduction="sum")
+        avg_loss = (total_loss / total_samples).item()
         
         # Concatenate predictions and true labels
         preds = self.accelerator.gather_for_metrics(torch.cat(preds))
         trues = self.accelerator.gather_for_metrics(torch.cat(trues)).long()
         
-        # evaluation metric
+        # Evaluation metric
         acc_metric = self.eval_metrics["classification"]["acc"]
         f1_score_metric = self.eval_metrics["classification"]["f1_score"]
         auroc_metric = self.eval_metrics["classification"]["auroc"]
         ap_metric = self.eval_metrics["classification"]["ap"]
-        
-        if self.accelerator.is_main_process:
-            acc = acc_metric(preds, trues)
-            f1_score = f1_score_metric(preds, trues)
-            ap = ap_metric(preds, trues)
-            auroc = auroc_metric(preds, trues)
-        else:
-            # dummy tensors so every rank has something to reduce
-            acc = torch.tensor(0.0, device=self.accelerator.device)
-            f1_score = torch.tensor(0.0, device=self.accelerator.device)
-            ap = torch.tensor(0.0, device=self.accelerator.device)
-            auroc = torch.tensor(0.0, device=self.accelerator.device)
-        
-        # broadcast metrics back to all ranks with mean 
-        acc = self.accelerator.reduce(acc, reduction="mean").item()
-        f1_score = self.accelerator.reduce(f1_score, reduction="mean").item()
-        ap = self.accelerator.reduce(ap, reduction="mean").item()
-        auroc = self.accelerator.reduce(auroc, reduction="mean").item()
+
+        acc = acc_metric(preds, trues).item()
+        f1_score = f1_score_metric(preds, trues).item()
+        ap = ap_metric(preds, trues).item()
+        auroc = auroc_metric(preds, trues).item()
 
         return avg_loss, acc, f1_score, ap, auroc
 
@@ -338,6 +322,11 @@ class Trainer:
             weight_decay=self.train_config.optim.weight_decay
         )
         
+        # Prepare model, optimizer, and scheduler for DDP
+        train_loader, val_loader, model, optimizer = self.accelerator.prepare(
+            train_loader, val_loader, model, optimizer
+        )
+
         # Initialize scheduler if configured
         lr_scheduler = None
         if self.train_config.lr_scheduler and not self.args.progressive_unfreeze:
@@ -346,11 +335,6 @@ class Trainer:
             lr_scheduler = get_cosine_schedule_with_warmup(
                 optimizer, num_warmup_steps, num_training_steps
             )
-        
-        # Prepare model, optimizer, and scheduler for DDP
-        train_loader, val_loader, model, optimizer, lr_scheduler = self.accelerator.prepare(
-            train_loader, val_loader, model, optimizer, lr_scheduler
-        )
         
         # Setup checkpoint paths
         fold_checkpoint_dir = os.path.join(self.checkpoint_dir, f"fold_{fold_idx}" if fold_idx > 0 else "")
@@ -367,15 +351,15 @@ class Trainer:
         if self.args.resume:
             if not os.path.exists(best_checkpoint):
                 raise RuntimeError(f"No checkpoint found to resume. Expected a 'best.pt' at: {best_checkpoint}")
-
+                
+            ckpt = torch.load(best_checkpoint, map_location=self.accelerator.device)
+            model.load_state_dict(ckpt["model_state"])
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+            if lr_scheduler and ckpt.get("scheduler_state"):
+                lr_scheduler.load_state_dict(ckpt["scheduler_state"])
+            best_metric = ckpt.get("best_metric", best_metric)
+            start_epoch = ckpt.get("epoch", 0)
             if self.accelerator.is_main_process:
-                ckpt = torch.load(best_checkpoint, map_location=self.accelerator.device)
-                model.load_state_dict(ckpt["model_state"])
-                optimizer.load_state_dict(ckpt["optimizer_state"])
-                if lr_scheduler and ckpt.get("scheduler_state"):
-                    lr_scheduler.load_state_dict(ckpt["scheduler_state"])
-                best_metric = ckpt.get("best_metric", best_metric)
-                start_epoch = ckpt.get("epoch", 0)
                 logger.info(
                     f"Fold {fold_idx if fold_idx > 0 else 'single'}: Resumed from epoch {start_epoch}, "
                     f"best_metric={best_metric:.4f} from {best_checkpoint}"
@@ -410,9 +394,6 @@ class Trainer:
             else:
                 fold_idx = 0  
                 log_prefix = ""  
-                
-            if self.accelerator.is_main_process:
-                logger.info(f"{log_prefix} Training size: {len(train_loader)} Validation size: {len(val_loader)}")
             
             # Initialize KFold 
             kfold = self.initialize_fold(
@@ -436,7 +417,7 @@ class Trainer:
             # Training loop
             for epoch in range(kfold.start_epoch, num_epochs):
                 # Progressive unfreezing - handle before training starts to avoid race conditions
-                if self.args.progressive_unfreeze and self.accelerator.is_main_process:
+                if self.args.progressive_unfreeze:
                     # Apply unfreezing strategy on main process
                     if epoch > 0:
                         self._apply_unfreezing_strategy(kfold.model, current_epoch=epoch)
@@ -452,11 +433,13 @@ class Trainer:
                                         if any(pattern.format(i) in name for i in range(total_layers) 
                                               for pattern in [layer_pattern]) and param.requires_grad)
                     
-                    wandb.log({
-                        f"{log_prefix}trainer/unfrozen_layers": unfrozen_layers,
-                        f"{log_prefix}trainer/total_layers": total_layers,
-                        f"{log_prefix}trainer/unfreeze_ratio": unfrozen_layers / total_layers,
-                    })
+                    #  wandb logs
+                    if self.accelerator.is_main_process:
+                        wandb.log({
+                            f"{log_prefix}trainer/unfrozen_layers": unfrozen_layers,
+                            f"{log_prefix}trainer/total_layers": total_layers,
+                            f"{log_prefix}trainer/unfreeze_ratio": unfrozen_layers / total_layers,
+                        })
                     
                     # Synchronize all processes to ensure unfreezing is applied consistently
                     self.accelerator.wait_for_everyone()
@@ -488,13 +471,22 @@ class Trainer:
                     })
                 
                 # Early stopping
-                if early_stopper and self.accelerator.is_main_process:
-                    early_stop, new_best_metric = early_stopper.step(val_ap, kfold.model, kfold.optimizer, kfold.lr_scheduler, epoch + 1)
-                    if new_best_metric is not None:
-                        kfold.best_metric = new_best_metric
-                    if early_stop:
-                        logger.info(f"{log_prefix}Stopping early at epoch {epoch + 1}")
-                        break
+                if early_stopper:
+                    stop_flag = 0
+                    if self.accelerator.is_main_process:
+                        early_stop, new_best_metric = early_stopper.step(val_ap, kfold.model, kfold.optimizer, kfold.lr_scheduler, epoch + 1)
+                        if new_best_metric is not None:
+                            kfold.best_metric = new_best_metric
+                        if early_stop:
+                            logger.info(f"{log_prefix}Stopping early at epoch {epoch + 1}")
+                            stop_flag = 1
+                    # Broadcast the stop decision to all ranks: max() over {0,1}
+                    broadcast_stop = torch.tensor(stop_flag, device=self.accelerator.device)
+                    broadcast_stop = self.accelerator.reduce(broadcast_stop, reduction="max")
+                    self.accelerator.wait_for_everyone()
+
+                    if broadcast_stop.item():
+                        break  # all ranks break together
                 else:
                     # If not using early stopping, update best metric directly
                     if val_ap > kfold.best_metric:
