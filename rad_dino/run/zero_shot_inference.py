@@ -8,6 +8,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoModel
+from dotenv import load_dotenv, find_dotenv
+
 from rad_dino.loggings.setup import init_logging
 from rad_dino.data.data_loader import create_test_loader
 from rad_dino.utils.config_utils import setup_configs
@@ -19,6 +21,8 @@ from rad_dino.data.label_mapping import class_labels_mapping
 from rad_dino.configs.ark_zero_shot_config import ARK_PRETRAINED_TASKS
 from rad_dino.utils.zero_shot_transfer.ark_zero_shot_postprocess import build_target_to_pretrained_ark_indices, aggregate_targeted_pred_probs
 from rad_dino.utils.zero_shot_transfer.rsna_postprocess import rsna_multiclass_logits_to_binary_logits
+
+load_dotenv(find_dotenv())
 
 init_logging()
 logger = logging.getLogger(__name__)

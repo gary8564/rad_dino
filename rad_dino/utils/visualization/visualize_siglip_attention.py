@@ -1,13 +1,12 @@
 import os
 import random
 import logging
-from typing import Union
-
 import numpy as np
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from skimage.io import imread
+from typing import Union, Optional
 from torchvision.transforms import ToPILImage
 
 from rad_dino.loggings.setup import init_logging
@@ -58,36 +57,22 @@ def _row_normalize_with_identity(a: torch.Tensor, identity_weight: float = 1.0) 
 
 
 def _compute_siglip_rollout(attentions: torch.Tensor, discard_ratio: float = 0.9, head_fusion: str = "mean") -> torch.Tensor:
-    """
-    Attention rollout for models WITHOUT CLS token (e.g., SigLIP vision).
-    Returns vector of length N (num_patches) representing per-patch importance, derived by
-    averaging over all query positions.
-    
-    attentions: [num_layers, num_heads, N, N]
-    """
+    """Compute attention rollout with pooler weights."""
     if len(attentions.shape) != 4:
         raise ValueError(f"Expected attention tensor with 4 dimensions (num_layers, num_heads, N, N), got {attentions.shape}")
     device = attentions.device
-    num_layers, _, N, N2 = attentions.shape
-    if N != N2:
+    num_layers, _, N1, N2 = attentions.shape
+    if N1 != N2:
         raise ValueError(f"Attention must be square, got {attentions.shape}")
 
-    result = torch.eye(N, device=device)
+    result = torch.eye(N1, device=device)
     with torch.no_grad():
         for layer_idx in range(num_layers):
             A = _fuse_heads(attentions[layer_idx], head_fusion)
             A = _discard_low_values_per_row(A, discard_ratio)
             A = _row_normalize_with_identity(A, identity_weight=1.0)
             result = A @ result
-
-    # Average over all queries to get per-key importance  
-    # For SigLIP, we average over rows (queries) to get importance per key (patch)
-    mask = result.mean(dim=0)  # [N]
-    if torch.isnan(mask).any():
-        raise RuntimeError("NaN detected in rollout mask for SigLIP.")
-    if torch.allclose(mask, torch.zeros_like(mask)):
-        raise RuntimeError("Rollout result is all zeros for SigLIP.")
-    return mask
+    return result
 
 
 def _apply_threshold_mask(attention_map: torch.Tensor, threshold: float) -> torch.Tensor:
@@ -115,20 +100,11 @@ def _process_attentions_per_image(
     compute_rollout: bool,
     all_layer_attentions: Union[torch.Tensor, None] = None,
     rollout_discard_ratio: float = 0.9,
+    pooler_attn: Optional[torch.Tensor] = None,
 ) -> None:
-    """Process SigLIP attention maps for a single image/view (no CLS token)."""
-    if compute_rollout and isinstance(head_fusion, int):
-        raise ValueError("Attention rollout computation is only supported when head_fusion is 'mean'|'max'|'min'.")
-
-    num_heads = attention.shape[0]
-
-    # Per-head per-key map by averaging over all queries (no CLS)
-    per_key = attention.mean(dim=1)  # [num_heads, N]
-    per_key = per_key.reshape(num_heads, w_featmap, h_featmap)
-
-    # Upsample to image grid for visualization
-    per_key_up = nn.functional.interpolate(per_key.unsqueeze(0), scale_factor=patch_size, mode="nearest")[0]
-    per_key_np = per_key_up.detach().cpu().numpy()
+    """Process SigLIP attention maps for a single image/view (pooler-centric only)"""
+    if pooler_attn is None:
+        raise ValueError("SigLip attention visualization requires pooler_attn_for_view (per-head pooler weights).")
 
     # Save original image
     image_denorm = image * image_std.to(image.device) + image_mean.to(image.device)
@@ -139,22 +115,32 @@ def _process_attentions_per_image(
         original_image = original_image[:, :, :3]
 
     # Determine heads/maps to save
+    selected_maps: list[torch.Tensor] = []
+    heads_to_save: list[Union[int, str]] = []
+
+    # pooler_attn: [H, N]
+    num_pooler_heads = pooler_attn.shape[0]
     if head_fusion in ("mean", "max", "min"):
         if head_fusion == "mean":
-            fused = np.mean(per_key_np, axis=0)
+            fused_pooler_attn = pooler_attn.mean(dim=0)
         elif head_fusion == "max":
-            fused = np.max(per_key_np, axis=0)
+            fused_pooler_attn = pooler_attn.max(dim=0)[0]
         else:
-            fused = np.min(per_key_np, axis=0)
+            fused_pooler_attn = pooler_attn.min(dim=0)[0]
+        fused_pooler_attn_maps = fused_pooler_attn.reshape(w_featmap, h_featmap)
+        fused_pooler_attn_maps_upsampled = nn.functional.interpolate(fused_pooler_attn_maps.unsqueeze(0).unsqueeze(0), scale_factor=patch_size, mode="nearest")[0, 0]
+        selected_maps = [fused_pooler_attn_maps_upsampled]
         heads_to_save = [f"{head_fusion}_fused"]
-        selected_maps = [fused]
     elif isinstance(head_fusion, int):
-        k = min(int(head_fusion), num_heads)
-        if k > num_heads:
-            logger.warning(f"Number of heads to save ({k}) exceeds number of heads ({num_heads}). Using all heads.")
-        head_indices = random.sample(range(num_heads), k)
+        k = min(int(head_fusion), num_pooler_heads)
+        if k > num_pooler_heads:
+            logger.warning(f"Number of heads to save ({k}) exceeds number of heads ({num_pooler_heads}). Using all heads.")
+        head_indices = random.sample(range(num_pooler_heads), k)
+        for h in head_indices:
+            attn_head_maps = pooler_attn[h].reshape(w_featmap, h_featmap)
+            attn_head_maps_upsampled = nn.functional.interpolate(attn_head_maps.unsqueeze(0).unsqueeze(0), scale_factor=patch_size, mode="nearest")[0, 0]
+            selected_maps.append(attn_head_maps_upsampled)
         heads_to_save = head_indices
-        selected_maps = [per_key_np[h] for h in head_indices]
     else:
         raise ValueError(f"Invalid head_fusion: {head_fusion}")
 
@@ -162,33 +148,31 @@ def _process_attentions_per_image(
     for map_idx, head_id in enumerate(heads_to_save):
         attention_map = selected_maps[map_idx]
         # Normalize for display
-        att_t = torch.from_numpy(attention_map)
-        att_t = (att_t - att_t.min()) / (att_t.max() - att_t.min() + 1e-8)
+        att_t = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min() + 1e-8)
         # Save raw heatmap
         head_name = f"head_{head_id}" if isinstance(head_id, int) else head_id
         fname = os.path.join(image_output_dir, f"attn_{head_name}.png")
-        plt.imsave(fname=fname, arr=att_t.cpu().numpy(), format='png', cmap='viridis', dpi=300)
+        plt.imsave(fname=fname, arr=att_t.detach().cpu().numpy(), format='png', cmap='viridis', dpi=300)
         # Masked overlay
         masked = _apply_threshold_mask(att_t, threshold)
         mask_fname = os.path.join(image_output_dir, f"masked_{threshold * 100:.0f}%_{head_name}.png")
         _display_instances(original_image, masked.cpu().numpy(), fname=mask_fname, blur=False, figsize=(8, 8))
 
-    # Rollout
+    # Rollout 
     if compute_rollout and all_layer_attentions is not None:
-        logger.info(f"Computing SigLIP attention rollout with {all_layer_attentions.shape[0]} layers and head_fusion={head_fusion}")
-        rollout_vec = _compute_siglip_rollout(all_layer_attentions, discard_ratio=rollout_discard_ratio, head_fusion=head_fusion if isinstance(head_fusion, str) else "mean")
-        width = int(rollout_vec.size(-1) ** 0.5)
-        if width != w_featmap or width != h_featmap:
-            raise ValueError(f"NotEqualError: width of rollout_mask: {width}, width_featmap: {w_featmap}, height_featmap: {h_featmap}")
-        rollout_spatial = rollout_vec.reshape(width, width).unsqueeze(0).unsqueeze(0)
-        rollout_up = nn.functional.interpolate(rollout_spatial, scale_factor=patch_size, mode="nearest")[0, 0]
-        rollout_up = (rollout_up - rollout_up.min()) / (rollout_up.max() - rollout_up.min() + 1e-8)
+        # Compute rollout across encoder heads
+        if not isinstance(head_fusion, str) or head_fusion not in ("mean", "max", "min"):
+            raise ValueError(f"When computing rollout, head_fusion must be 'mean', 'max', or 'min'")
+        rollout = _compute_siglip_rollout(all_layer_attentions, discard_ratio=rollout_discard_ratio, head_fusion=head_fusion)
 
-        rollout_fname = os.path.join(image_output_dir, f"rollout_{head_fusion if isinstance(head_fusion, str) else 'mean'}.png")
-        plt.imsave(fname=rollout_fname, arr=rollout_up.cpu().numpy(), format='png', cmap='viridis', dpi=300)
-
-        rollout_masked = _apply_threshold_mask(rollout_up, threshold)
-        rollout_mask_fname = os.path.join(image_output_dir, f"rollout_masked_{threshold * 100:.0f}%_{head_fusion if isinstance(head_fusion, str) else 'mean'}.png")
+        # fused_pooler_attn: [N]; rollout: [N,N] → pooled_rollout: [N]
+        pooled_rollout = (fused_pooler_attn @ rollout).reshape(w_featmap, h_featmap)
+        pooled_rollout = (pooled_rollout - pooled_rollout.min()) / (pooled_rollout.max() - pooled_rollout.min() + 1e-8)
+        pooled_rollout_upsampled = nn.functional.interpolate(pooled_rollout.unsqueeze(0).unsqueeze(0), scale_factor=patch_size, mode="nearest")[0, 0]
+        rollout_fname = os.path.join(image_output_dir, f"rollout_{head_fusion}.png")
+        plt.imsave(fname=rollout_fname, arr=pooled_rollout_upsampled.detach().cpu().numpy(), format='png', cmap='viridis', dpi=300)
+        rollout_masked = _apply_threshold_mask(pooled_rollout_upsampled, threshold)
+        rollout_mask_fname = os.path.join(image_output_dir, f"rollout_masked_{threshold * 100:.0f}%_{head_fusion}.png")
         _display_instances(original_image, rollout_masked.cpu().numpy(), fname=rollout_mask_fname, blur=False, figsize=(8, 8))
 
 
@@ -205,6 +189,7 @@ def visualize_siglip_attention_maps(
     head_fusion: Union[str, int] = "mean",
     compute_rollout: bool = False,
     rollout_discard_ratio: float = 0.9,
+    pooler_attn_weights: Optional[torch.Tensor] = None,
 ):
     """
     Visualize attention maps for SigLIP vision encoder (no CLS token, MAP pooling).
@@ -246,10 +231,15 @@ def visualize_siglip_attention_maps(
                 image_output_dir = os.path.join(output_dir, f"attention_{image_id}_{view_name}")
                 os.makedirs(image_output_dir, exist_ok=True)
                 all_layer_attns = attentions[:, idx, view_idx] if compute_rollout else None
+                pooler_view = None
+                if pooler_attn_weights is not None:
+                    # pooler_attn_weights expected [B, V, H, N]
+                    pooler_view = pooler_attn_weights[idx, view_idx]
                 _process_attentions_per_image(
                     attn, img, image_output_dir, image_mean, image_std,
                     w_featmap, h_featmap, patch_size, threshold, head_fusion,
                     compute_rollout, all_layer_attentions=all_layer_attns, rollout_discard_ratio=rollout_discard_ratio,
+                    pooler_attn=pooler_view
                 )
         else:
             attn = last_attention[idx]
@@ -257,10 +247,15 @@ def visualize_siglip_attention_maps(
             image_output_dir = os.path.join(output_dir, f"attention_{image_id}")
             os.makedirs(image_output_dir, exist_ok=True)
             all_layer_attns = attentions[:, idx] if compute_rollout else None
+            pooler_view = None
+            if pooler_attn_weights is not None:
+                # pooler_attn_weights expected [B, H, N]
+                pooler_view = pooler_attn_weights[idx]
             _process_attentions_per_image(
                 attn, img, image_output_dir, image_mean, image_std,
                 w_featmap, h_featmap, patch_size, threshold, head_fusion,
                 compute_rollout, all_layer_attentions=all_layer_attns, rollout_discard_ratio=rollout_discard_ratio,
+                pooler_attn=pooler_view
             )
 
         if (idx + 1) % 10 == 0 or idx == batch_size - 1:

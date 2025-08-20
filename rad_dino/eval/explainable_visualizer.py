@@ -96,7 +96,8 @@ class ExplainableVisualizer:
                                     backbone_config, 
                                     attention_threshold: float, 
                                     save_heads: str, 
-                                    compute_rollout: bool = False) -> None:
+                                    compute_rollout: bool = False,
+                                    pooler_attn_weights: Optional[torch.Tensor] = None) -> None:
         """Run attention visualization if enabled"""
         if not self.show_attention or attentions is None:
             return
@@ -139,12 +140,19 @@ class ExplainableVisualizer:
                 patch_size = DEFAULT_PATCH_SIZE
 
             if is_siglip:
+                # Enforce constraints for SigLIP rollout
+                if compute_rollout:
+                    if not isinstance(save_heads_param, str) or save_heads_param not in ("mean", "max", "min"):
+                        raise ValueError("For SigLIP rollout, save_heads must be one of {'mean','max','min'}.")
+                    if pooler_attn_weights is None:
+                        raise ValueError("For SigLIP rollout, pooler_attn_weights must be available (PyTorch only).")
                 visualize_siglip_attention_maps(
                     attentions, images, image_ids, self.output_paths.attention,
                     self.accelerator, self.image_mean, self.image_std,
                     patch_size=patch_size, threshold=attention_threshold,
                     head_fusion=save_heads_param,
-                    compute_rollout=compute_rollout, rollout_discard_ratio=0.9)
+                    compute_rollout=compute_rollout, rollout_discard_ratio=0.9,
+                    pooler_attn_weights=pooler_attn_weights)
             else:
                 visualize_vit_attention_maps(
                     attentions, images, image_ids, self.output_paths.attention, 

@@ -309,6 +309,11 @@ def load_model(checkpoint_dir: str,
     
     # Use ONNX if available and no gradient-based visualization approaches are required
     use_onnx_preferred = os.path.exists(onnx_model_path) and not (show_gradcam or show_lrp)
+    
+    # For MedSigLIP attention visualization we must use PyTorch to capture pooler weights
+    if model_name == "medsiglip" and show_attention:
+        use_onnx_preferred = False
+        
     if use_onnx_preferred:
         return _load_onnx_model(checkpoint_dir, model_name, accelerator, backbone_config, show_attention, multi_view)
     else:

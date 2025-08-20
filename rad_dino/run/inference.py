@@ -7,6 +7,8 @@ from torch.utils.data import DataLoader
 from transformers import AutoImageProcessor
 import logging
 from typing import List, Any
+from dotenv import load_dotenv, find_dotenv
+
 from rad_dino.data.dataset import RadImageClassificationDataset
 from rad_dino.data.data_loader import create_test_loader
 from rad_dino.utils.transforms import get_transforms
@@ -18,6 +20,8 @@ from rad_dino.eval.inference_engine import InferenceEngine
 from rad_dino.eval.explainable_visualizer import ExplainableVisualizer
 from rad_dino.eval.evaluation_processor import EvaluationProcessor
 from rad_dino.data.label_mapping import class_labels_mapping
+
+load_dotenv(find_dotenv())
 
 init_logging()
 logger = logging.getLogger(__name__)
@@ -229,7 +233,7 @@ def run_inference(model_wrapper,
             torch.cuda.empty_cache()
         
         # Run inference
-        logits, attentions = inference_engine.run_inference(images, num_classes)
+        logits, attentions, pooler_attn = inference_engine.run_inference(images, num_classes)
         
         # Run visualizations (only if enabled and visualizer is initialized)
         if explainable_visualizer is not None:
@@ -245,7 +249,8 @@ def run_inference(model_wrapper,
             if config.show_attention and attentions is not None:
                 explainable_visualizer.run_attention_visualization(
                     attentions, images, image_ids, model_wrapper.config,
-                    config.attention_threshold, config.save_heads, config.compute_rollout
+                    config.attention_threshold, config.save_heads, config.compute_rollout,
+                    pooler_attn_weights=pooler_attn
                 )
             
             # LRP visualization

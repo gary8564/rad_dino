@@ -7,6 +7,7 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from torch.utils.data import Subset
 import wandb
+from dotenv import load_dotenv, find_dotenv
 
 from rad_dino.utils.config_utils import setup_configs
 from rad_dino.data.data_loader import load_data
@@ -19,6 +20,8 @@ from rad_dino.models.siglip import MedSigClassifier
 from rad_dino.models.ark import ArkClassifier, load_prtrained_ark_model
 from rad_dino.loggings.setup import init_logging
 from rad_dino.train.trainer import Trainer
+
+load_dotenv(find_dotenv())
 
 init_logging()
 logger = logging.getLogger(__name__)

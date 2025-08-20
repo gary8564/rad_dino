@@ -142,13 +142,17 @@ def _run_onnx_inference(session: onnxruntime.InferenceSession,
 
     return logits, attentions
 
-def _run_pytorch_inference(model: DinoClassifier | MedSigClassifier | ArkClassifier, images: torch.Tensor, 
-                          show_attention: bool, accelerator: Accelerator) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-    """PyTorch inference workflow - pure inference only"""
+def _run_pytorch_inference(model: DinoClassifier | MedSigClassifier | ArkClassifier, 
+                           images: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    """
+    PyTorch inference workflow
+    Returns (logits, attentions, attention_pooling) where attention_pooling is from SigLIP pooler if available.
+    """
     with torch.no_grad():
         logits, attentions = model(images)
-    
-    return logits, attentions
+    # Try to fetch attention pooling weights if present (SigLIP only)
+    attention_pooling = getattr(model, 'last_pooler_attn', None)
+    return logits, attentions, attention_pooling
 
 class InferenceEngine:
     """Unified inference engine for both ONNX and PyTorch models"""    
@@ -176,7 +180,7 @@ class InferenceEngine:
             self.model.eval()
             logger.info(f"Running inference with PyTorch model (multi_view={self.multi_view})")
     
-    def run_inference(self, images: torch.Tensor, num_classes: int = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def run_inference(self, images: torch.Tensor, num_classes: int = None) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Run inference with the appropriate backend - pure inference only"""
         # Validate input shapes
         _validate_input_shape(images, self.multi_view)
@@ -190,12 +194,24 @@ class InferenceEngine:
             logits, attentions = _run_onnx_inference(
                 self.session, self.input_name, self.output_names, images, self.show_attention,
                 self.accelerator, num_classes, self.backbone_config, self.multi_view)
+            pooler_attn = None
         else:
-            logits, attentions = _run_pytorch_inference(
-                self.model, images, self.show_attention, self.accelerator)
+            logits, attentions, raw_pooler_attn = _run_pytorch_inference(self.model, images)
+            # Reshape pooler attention to [B*V or B, H, 1, N] -> [B, H, N] or [B, V, H, N]
+            pooler_attn = None
+            if raw_pooler_attn is not None:
+                raw_pooler_attn = raw_pooler_attn.squeeze(2) # squeeze query dim
+                batch_size = images.shape[0]
+                if self.multi_view and images.dim() == 5:
+                    num_views = images.shape[1]
+                    num_heads = raw_pooler_attn.shape[1]
+                    num_tokens = raw_pooler_attn.shape[-1]
+                    pooler_attn = raw_pooler_attn.view(batch_size, num_views, num_heads, num_tokens)
+                else:
+                    pooler_attn = raw_pooler_attn  # [B, H, N]
         
         # Clear CUDA cache after inference
         if self.accelerator.device.type == 'cuda':
             torch.cuda.empty_cache()
             
-        return logits, attentions 
+        return logits, attentions, pooler_attn 

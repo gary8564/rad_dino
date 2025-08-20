@@ -41,6 +41,8 @@ class MedSigClassifier(nn.Module):
         self.num_classes = num_classes
         self.multi_view = multi_view
         self.return_attentions = return_attentions
+        # pooler attention weights captured during forward
+        self.last_pooler_attn = None
         
         # Initialize classification head
         self._init_classification_head()
@@ -360,12 +362,39 @@ class MedSigClassifier(nn.Module):
         # Apply input reshaping strategy
         pixel_values_reshaped, num_views = self.input_reshape_strategies[self.multi_view](pixel_values)
         
+        # Optionally capture pooler attention weights per-head
+        head = getattr(self.backbone.vision_model, 'head', None)
+        original_head_forward = None
+        if head is not None and hasattr(head, 'attention') and self.return_attentions:
+            original_head_forward = head.forward
+
+            def forward_with_pooler_attn_capture(hidden_state: torch.Tensor):
+                patch_batch_size = hidden_state.shape[0]
+                probe = head.probe.repeat(patch_batch_size, 1, 1)
+                attn_output, attn_weights = head.attention(
+                    probe, hidden_state, hidden_state, average_attn_weights=False
+                )
+                # Save per-head pooler attention weights: [B, num_heads, 1, N]
+                setattr(head, "_last_attn_weights", attn_weights.detach())
+                residual = attn_output
+                hidden_state = head.layernorm(attn_output)
+                hidden_state = residual + head.mlp(hidden_state)
+                return hidden_state[:, 0]
+
+            head.forward = forward_with_pooler_attn_capture
+
         # Process through vision model with attention maps
         vision_outputs = self.backbone.vision_model(
             pixel_values=pixel_values_reshaped,
             output_attentions=self.return_attentions,
             return_dict=True
         )
+
+        # Hook captured weights to classifier
+        if head is not None and original_head_forward is not None:
+            self.last_pooler_attn = getattr(head, '_last_attn_weights', None)
+            # Restore original head forward
+            head.forward = original_head_forward
         
         # Extract features and normalize
         features = vision_outputs.pooler_output / vision_outputs.pooler_output.norm(dim=-1, keepdim=True)
