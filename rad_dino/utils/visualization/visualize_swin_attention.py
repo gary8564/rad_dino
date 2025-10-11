@@ -1,8 +1,6 @@
 """
-Swin Transformer Attention Visualization Module
-
-This module provides specialized visualization functions for Swin Transformer attention maps,
-handling the hierarchical structure, window-based attention, and patch merging between stages.
+Swin Transformer Attention Visualization: 
+hierarchical structure, window-based attention, and patch merging between stages.
 """
 
 import os
@@ -20,8 +18,10 @@ from rad_dino.utils.visualization.visualize_vit_attention import _display_instan
 
 logger = logging.getLogger(__name__)
 
-def _normalize_shift_size(shift: Optional[Union[int, tuple, list]]) -> Tuple[int, int]:
-    """Normalize shift size to a tuple[int, int]. Accepts int or tuple/list of length 2."""
+def _standardize_shift_size_format(shift: Optional[Union[int, tuple, list]]) -> Tuple[int, int]:
+    """
+    Standardize shift size format to a tuple[int, int]. 
+    """
     if shift is None:
         return (0, 0)
     if isinstance(shift, int):
@@ -140,39 +140,37 @@ def _stitch_block_attention(
     Returns: [batch_size, H, W] fused spatial map (head-fused and query-fused by mean over queries)
     """
     BnW, num_heads, N, _ = attn_map.shape
-    ws = int(math.isqrt(N))
-    assert ws * ws == N, f"Invalid window size inferred from attention: {N}"
+    window_size = int(math.isqrt(N))
 
-    # Compute padding to make H,W divisible by ws (matches TIMM lines 392-394)
-    H_padded, W_padded, pad_h, pad_w, nW = _compute_pad_grid(H, W, ws)
-    B = BnW // nW
+    # Compute padding to make H,W divisible by ws
+    H_padded, W_padded, pad_h, pad_w, num_windows = _compute_pad_grid(H, W, window_size)
+    B = BnW // num_windows
     assert B == batch_size, f"Extracted batch size {B} != expected {batch_size}"
 
     # Fuse heads, then fuse queries by mean to get per-key weights within each window
-    attn_fused = _fuse_heads(attn_map, head_fusion=head_fusion)  # [B*nW, N, N]
-    per_key = attn_fused.mean(dim=-2)  # [B*nW, N] - average over query positions
+    attn_fused = _fuse_heads(attn_map, head_fusion=head_fusion)  # [batch_size*num_windows, N, N]
+    per_key = attn_fused.mean(dim=-2)  # [batch_size*num_windows, N] - average over query positions
     
     # Reshape to [B, nW, ws, ws] for tiling
-    per_key = per_key.view(B, nW, ws, ws)
+    per_key = per_key.view(B, num_windows, window_size, window_size)
 
     # Tile into canvas following TIMM's window_partition order
     # TIMM: view(B, H//ws, ws, W//ws, ws, C).permute(0,1,3,2,4,5).view(-1, ws, ws, C)
-    # Window idx maps to: idx = wh * nWw + ww where nWw = Wp // ws
-    nWh = H_padded // ws
-    nWw = W_padded // ws
-    assert nW == nWh * nWw
+    num_window_rows = H_padded // window_size
+    num_window_cols = W_padded // window_size
+    assert num_windows == num_window_rows * num_window_cols
     
     canvas = attn_map.new_zeros((B, H_padded, W_padded))
     for b in range(B):
-        for wh in range(nWh):
-            for ww in range(nWw):
-                idx = wh * nWw + ww  # TIMM's window ordering
-                h0 = wh * ws
-                w0 = ww * ws
-                canvas[b, h0:h0+ws, w0:w0+ws] = per_key[b, idx]
+        for wh in range(num_window_rows):
+            for ww in range(num_window_cols):
+                idx = wh * num_window_cols + ww  # TIMM's window ordering
+                h0 = wh * window_size
+                w0 = ww * window_size
+                canvas[b, h0:h0+window_size, w0:w0+window_size] = per_key[b, idx]
 
     # Reverse cyclic shift to original coordinates 
-    norm_shift = _normalize_shift_size(shift_size)
+    norm_shift = _standardize_shift_size_format(shift_size)
     if any(norm_shift):
         canvas = torch.roll(canvas, shifts=norm_shift, dims=(1, 2))
 
@@ -192,29 +190,28 @@ def _stitch_block_attention_per_head(
     attn_map: [B*nW, num_heads, N, N]; returns [B, num_heads, H, W].
     """
     BnW, num_heads, N, _ = attn_map.shape
-    ws = int(math.isqrt(N))
-    assert ws * ws == N
+    window_size = int(math.isqrt(N))
 
-    H_padded, W_padded, pad_h, pad_w, nW = _compute_pad_grid(H, W, ws)
-    B = BnW // nW
+    H_padded, W_padded, pad_h, pad_w, num_windows = _compute_pad_grid(H, W, window_size)
+    B = BnW // num_windows
     assert B == batch_size
 
     # Average over queries to get per-key weights per head
-    per_key = attn_map.mean(dim=-2)  # [B*nW, num_heads, N]
-    per_key = per_key.view(B, nW, num_heads, ws, ws)
+    per_key = attn_map.mean(dim=-2)  # [batch_size*num_windows, num_heads, N]
+    per_key = per_key.view(B, num_windows, num_heads, window_size, window_size)
 
-    nWh = H_padded // ws
-    nWw = W_padded // ws
+    num_window_rows = H_padded // window_size
+    num_window_cols = W_padded // window_size
     canvas = attn_map.new_zeros((B, num_heads, H_padded, W_padded))
     for b in range(B):
-        for wh in range(nWh):
-            for ww in range(nWw):
-                idx = wh * nWw + ww
-                h0 = wh * ws
-                w0 = ww * ws
-                canvas[b, :, h0:h0+ws, w0:w0+ws] = per_key[b, idx]
+        for wh in range(num_window_rows):
+            for ww in range(num_window_cols):
+                idx = wh * num_window_cols + ww
+                h0 = wh * window_size
+                w0 = ww * window_size
+                canvas[b, :, h0:h0+window_size, w0:w0+window_size] = per_key[b, idx]
 
-    norm_shift = _normalize_shift_size(shift_size)
+    norm_shift = _standardize_shift_size_format(shift_size)
     if any(norm_shift):
         canvas = torch.roll(canvas, shifts=norm_shift, dims=(2, 3))
 
@@ -245,15 +242,15 @@ def _apply_block_rollout(
         Updated S of shape [B, H, W]
     """
     BnW, num_heads, N, _ = attn_map.shape
-    ws = int(math.isqrt(N))
-    assert ws * ws == N
-    H_padded, W_padded, pad_h, pad_w, nW = _compute_pad_grid(H, W, ws)
+    window_size = int(math.isqrt(N))
+    assert window_size * window_size == N
+    H_padded, W_padded, pad_h, pad_w, num_windows = _compute_pad_grid(H, W, window_size)
     B = S.shape[0]
-    assert BnW == B * nW, f"Batch mismatch: attn batch*nW={BnW}, expected {B}*{nW}"
+    assert BnW == B * num_windows, f"Batch mismatch: attn batch*num_windows={BnW}, expected {B}*{num_windows}"
 
     # Prepare S on shifted, padded grid (to match how attention windows were formed)
     S_shifted = S
-    norm_shift = _normalize_shift_size(shift_size)
+    norm_shift = _standardize_shift_size_format(shift_size)
     if any(norm_shift):
         S_shifted = torch.roll(S_shifted, shifts=(-norm_shift[0], -norm_shift[1]), dims=(1, 2))
     if pad_h or pad_w:
@@ -265,26 +262,26 @@ def _apply_block_rollout(
     A = _row_normalize_with_identity(A, identity_weight=1.0)  # [B*nW, N, N]
 
     # Apply per-window operator following TIMM's window ordering
-    nWh = H_padded // ws
-    nWw = W_padded // ws
+    num_window_rows = H_padded // window_size
+    num_window_cols = W_padded // window_size
     S_new = S_shifted.new_zeros((B, H_padded, W_padded))
 
     # Process each batch and window
     for b in range(B):
-        for wh in range(nWh):
-            for ww in range(nWw):
-                idx = wh * nWw + ww  # TIMM's window ordering
-                window_idx = b * nW + idx
+        for wh in range(num_window_rows):
+            for ww in range(num_window_cols):
+                idx = wh * num_window_cols + ww  # TIMM's window ordering
+                window_idx = b * num_windows + idx
                 
-                h0 = wh * ws
-                w0 = ww * ws
-                s_win = S_shifted[b, h0:h0+ws, w0:w0+ws].reshape(-1)  # [N]
+                h0 = wh * window_size
+                w0 = ww * window_size
+                s_win = S_shifted[b, h0:h0+window_size, w0:w0+window_size].reshape(-1)  # [N]
                 a_win = A[window_idx]  # [N, N]
                 s_out = a_win @ s_win  # [N]
-                S_new[b, h0:h0+ws, w0:w0+ws] = s_out.view(ws, ws)
+                S_new[b, h0:h0+window_size, w0:w0+window_size] = s_out.view(window_size, window_size)
 
     # Reverse shift and crop
-    norm_shift = _normalize_shift_size(shift_size)
+    norm_shift = _standardize_shift_size_format(shift_size)
     if any(norm_shift):
         S_new = torch.roll(S_new, shifts=norm_shift, dims=(1, 2))
     S_new = S_new[:, :H, :W]
@@ -299,14 +296,18 @@ def _group_block_indices(stage_metadata: List[Dict]) -> List[int]:
     blocks = sorted({int(meta.get('block', 0)) for meta in stage_metadata})
     return blocks
 
-def _filter_maps_by_block(attn_maps: List[torch.Tensor], metadata: List[Dict], block_idx: int) -> Tuple[List[torch.Tensor], List[Dict]]:
+def _filter_maps_by_block(attn_maps: List[torch.Tensor], metadata: List[Dict], block_idx: int) -> Tuple[torch.Tensor, Dict]:
+    """
+    Return the single attention map and metadata for a given block index.
+    Enforces exactly one capture per block.
+    """
     idxs = [i for i, m in enumerate(metadata) if int(m.get('block', -1)) == block_idx]
     if len(idxs) == 0:
         raise RuntimeError(f"No attention map found for block index {block_idx}.")
     if len(idxs) > 1:
         raise RuntimeError(f"Expected exactly one attention map for block index {block_idx}, found {len(idxs)}.")
     i = idxs[0]
-    return [attn_maps[i]], [metadata[i]]
+    return attn_maps[i], metadata[i]
 
 def get_last_block_global_attention_map(
     hierarchical_attentions: Dict,
@@ -341,14 +342,8 @@ def get_last_block_global_attention_map(
     if not blocks:
         return None
     last_block_idx = max(blocks)
-    maps, metas = _filter_maps_by_block(stage_data['attention_maps'], stage_data['metadata'], last_block_idx)
-    if not maps:
-        return None
-    if len(maps) > 1:
-        raise ValueError(f"Found {len(maps)} attention captures for last block {last_block_idx}.")
-    # Use the most recent capture if multiple exist (should normally be 1)
-    attn_map = maps[-1]
-    shift = metas[0].get('shift_size', (0, 0))
+    attn_map, meta = _filter_maps_by_block(stage_data['attention_maps'], stage_data['metadata'], last_block_idx)
+    shift = meta.get('shift_size', (0, 0))
     H, W = stage_data['stage_info']['input_resolution']
     stitched = _stitch_block_attention(
         attn_map=attn_map,
@@ -379,13 +374,13 @@ def _compute_swin_attention_rollout(
     # Determine batch size from first attention map and stage resolution
     BnW = fs_maps[0].shape[0]
     H0, W0 = fs_data['stage_info']['input_resolution']
-    ws2 = fs_maps[0].shape[-1]
-    ws = int(math.isqrt(ws2))
-    _, _, _, _, nW0 = _compute_pad_grid(H0, W0, ws)
+    N = fs_maps[0].shape[-1]
+    window_size = int(math.isqrt(N))
+    _, _, _, _, num_windows_stage0 = _compute_pad_grid(H0, W0, window_size)
     
     # Verify batch size is consistent
-    assert BnW % nW0 == 0, f"Attention batch dim {BnW} not divisible by num_windows {nW0}"
-    B = BnW // nW0
+    assert BnW % num_windows_stage0 == 0, f"Attention batch dim {BnW} not divisible by num_windows {num_windows_stage0}"
+    B = BnW // num_windows_stage0
     if B != batch_size:
         raise ValueError(f"Computed batch size {B} != expected {batch_size}.")
 
@@ -407,21 +402,9 @@ def _compute_swin_attention_rollout(
         # Apply each block in order
         blocks = _group_block_indices(stage_data['metadata'])
         for bidx in blocks:
-            maps, metas = _filter_maps_by_block(stage_data['attention_maps'], stage_data['metadata'], bidx)
-            if not maps:
-                continue
-                
-            # Use the first meta for shift (all should match per block)
-            meta0 = metas[0]
-            shift = meta0.get('shift_size', (0, 0))
-            
-            # Average multiple recordings if present
-            if len(maps) > 1:
-                attn_avg = torch.stack(maps, dim=0).mean(dim=0)
-            else:
-                attn_avg = maps[0]
-                
-            S = _apply_block_rollout(S, attn_avg, Hs, Ws, shift_size=shift, head_fusion=head_fusion, discard_ratio=discard_ratio)
+            attn_map, meta = _filter_maps_by_block(stage_data['attention_maps'], stage_data['metadata'], bidx)
+            shift = meta.get('shift_size', (0, 0))
+            S = _apply_block_rollout(S, attn_map, Hs, Ws, shift_size=shift, head_fusion=head_fusion, discard_ratio=discard_ratio)
 
     return S  # [B, H_last, W_last]
 
@@ -451,12 +434,12 @@ def compute_swin_rollout(
         if fs_data['attention_maps']:
             BnW = fs_data['attention_maps'][0].shape[0]
             H0, W0 = fs_data['stage_info']['input_resolution']
-            ws2 = fs_data['attention_maps'][0].shape[-1]
-            ws = int(math.isqrt(ws2))
-            _, _, _, _, nW0 = _compute_pad_grid(H0, W0, ws)
-            if nW0 > 0 and BnW % nW0 == 0:
-                inferred_batch = BnW // nW0
-    bs = batch_size if batch_size is not None else (inferred_batch or 1)
+            N = fs_data['attention_maps'][0].shape[-1]
+            window_size = int(math.isqrt(N))
+            _, _, _, _, num_windows_stage0 = _compute_pad_grid(H0, W0, window_size)
+            if num_windows_stage0 > 0 and BnW % num_windows_stage0 == 0:
+                inferred_batch = BnW // num_windows_stage0
+    bs = batch_size if batch_size is not None else inferred_batch
     return _compute_swin_attention_rollout(
         hierarchical_attentions=hierarchical_attentions,
         discard_ratio=discard_ratio,
@@ -493,9 +476,8 @@ def _process_swin_attentions_per_image(
         logger.warning("No blocks found in last stage metadata")
         return
     last_block_idx = max(blocks)
-    maps, metas = _filter_maps_by_block(stage_data['attention_maps'], stage_data['metadata'], last_block_idx)
-    attn_map_raw = maps[0]
-    shift = metas[0].get('shift_size', (0, 0))
+    attn_map_raw, meta = _filter_maps_by_block(stage_data['attention_maps'], stage_data['metadata'], last_block_idx)
+    shift = meta.get('shift_size', (0, 0))
     Hs, Ws = stage_data['stage_info']['input_resolution']
     
     # Save original image
@@ -674,9 +656,9 @@ def visualize_swin_attention_maps(
         # Process attention maps for this image
         try:
             _process_swin_attentions_per_image(
-                hierarchical_attentions, image, idx, image_output_dir, 
-                image_mean, image_std, head_fusion, threshold, 
-                compute_rollout, batch_size, rollout_discard_ratio
+                hierarchical_attentions, image, idx, image_output_dir,
+                image_mean, image_std, head_fusion, threshold,
+                compute_rollout, batch_size, rollout_discard_ratio,
             )
             logger.info(f"Attention visualization completed for image {image_ids[idx]}")
         except Exception as e:

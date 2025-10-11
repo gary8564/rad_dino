@@ -24,8 +24,8 @@ def _load_best_dino_model(checkpoint_dir: str,
     ckpt = torch.load(os.path.join(checkpoint_dir, "best.pt"), map_location=accelerator.device)
     
     # Get multi-view parameters from checkpoint or use defaults
-    num_views = ckpt.get("num_views")
-    view_fusion_type = ckpt.get("view_fusion_type")
+    num_views = ckpt.get("num_views", 4)
+    view_fusion_type = ckpt.get("view_fusion_type", "mean")
     adapter_dim = ckpt.get("adapter_dim")
     view_fusion_hidden_dim = ckpt.get("view_fusion_hidden_dim")
     
@@ -311,7 +311,7 @@ def load_model(checkpoint_dir: str,
     use_onnx_preferred = os.path.exists(onnx_model_path) and not (show_gradcam or show_lrp)
     
     # For MedSigLIP attention visualization we must use PyTorch to capture pooler weights
-    if model_name == "medsiglip" and show_attention:
+    if model_name in ["medsiglip", "ark"] and show_attention:
         use_onnx_preferred = False
         
     if use_onnx_preferred:

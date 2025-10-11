@@ -1,4 +1,5 @@
 import logging
+import os
 import numpy as np
 import torch
 import torchvision.transforms.v2 as transforms
@@ -15,7 +16,7 @@ from rad_dino.loggings.setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
 
-def create_train_loader(data_root_folder: str,
+def create_train_and_val_loader_by_random_split(data_root_folder: str,
                        task: str,
                        train_idx: list,
                        val_idx: list,
@@ -27,7 +28,7 @@ def create_train_loader(data_root_folder: str,
                        multi_view: bool = False,
                        ):
     """
-    Create train and validation data loaders.
+    Create train and validation data loaders by randomly splitting the train split.
     
     Args:
         data_root_folder: Root folder containing the dataset
@@ -69,6 +70,69 @@ def create_train_loader(data_root_folder: str,
         pin_memory=True,
         drop_last=False,
         collate_fn=collate_fn
+    )
+    return train_loader, val_loader
+
+def create_train_and_val_loader_by_predefined(data_root_folder: str,
+                       task: str,
+                       train_transforms: transforms.Compose,
+                       val_transforms: transforms.Compose,
+                       mini_batch_size: int,
+                       batch_size: int,
+                       num_workers: int,
+                       multi_view: bool = False,
+                       seed: int = 42,
+                       train_subset_fraction: float | None = None):
+    """
+    Create train and validation data loaders using predefined splits: `train` and `val`.
+
+    Optionally downsample the training set via `train_subset_fraction` for data efficiency studies.
+
+    Returns:
+        Tuple of (train_loader, val_loader)
+    """
+    ds_train = RadImageClassificationDataset(
+        data_root_folder,
+        "train",
+        task,
+        transform=train_transforms,
+        multi_view=multi_view,
+    )
+    if train_subset_fraction is not None and 0 < train_subset_fraction < 1:
+        torch.manual_seed(seed)
+        perm = torch.randperm(len(ds_train)).tolist()
+        n_subset = max(1, int(len(ds_train) * train_subset_fraction))
+        subset_idx = perm[:n_subset]
+        ds_train = Subset(ds_train, subset_idx)
+        logger.info(
+            f"Using a subset of the training set: {n_subset}/{len(perm)} ({train_subset_fraction*100:.1f}%)"
+        )
+
+    ds_val = RadImageClassificationDataset(
+        data_root_folder,
+        "val",
+        task,
+        transform=val_transforms,
+        multi_view=multi_view,
+    )
+
+    train_loader = DataLoader(
+        ds_train,
+        batch_size=mini_batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+        collate_fn=collate_fn,
+    )
+    val_loader = DataLoader(
+        ds_val,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+        collate_fn=collate_fn,
     )
     return train_loader, val_loader
 
@@ -168,25 +232,42 @@ def load_data(data_root_folder: str,
             # binary: use StratifiedKFold
             Y = base_ds.df["label"].to_numpy(dtype=np.int64)
             skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
-            return [create_train_loader(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
+            return [create_train_and_val_loader_by_random_split(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
                                      mini_batch_size, batch_size, num_workers, multi_view) 
                    for train_idx, val_idx in skf.split(base_ds.sample_ids, Y)]
         elif task == "multilabel":
             # multilabel: use MultilabelStratifiedKFold
             Y = base_ds.df.to_numpy(dtype=np.int64)
             mskf = MultilabelStratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
-            return [create_train_loader(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
+            return [create_train_and_val_loader_by_random_split(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
                                      mini_batch_size, batch_size, num_workers, multi_view) 
                    for train_idx, val_idx in mskf.split(X=base_ds.sample_ids, y=Y)]
         else:
             # multiclass: use StratifiedKFold
             Y = base_ds.df.to_numpy(dtype=np.int64)
             skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
-            return [create_train_loader(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
+            return [create_train_and_val_loader_by_random_split(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
                                      mini_batch_size, batch_size, num_workers, multi_view) 
                    for train_idx, val_idx in skf.split(base_ds.sample_ids, Y)]
     else:
         logger.info("Single split case")
+        # If a predefined validation split exists, use it directly
+        predefined_val_path = os.path.join(data_root_folder, "val_labels.csv")
+        if os.path.exists(predefined_val_path):
+            logger.info("Found predefined validation split (val_labels.csv). Using it directly.")
+            return create_train_and_val_loader_by_predefined(
+                data_root_folder=data_root_folder,
+                task=task,
+                train_transforms=train_transforms,
+                val_transforms=val_transforms,
+                mini_batch_size=mini_batch_size,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                multi_view=multi_view,
+                seed=seed,
+                train_subset_fraction=train_subset_fraction,
+            )
+        # Otherwise, fall back to random split from the training set
         n_total_samples = len(base_ds)
         n_train = int(train_size * n_total_samples)
         if n_train == 0 or n_train == n_total_samples:
@@ -203,5 +284,5 @@ def load_data(data_root_folder: str,
             logger.info(
                 f"Using a subset of the training set: {n_subset}/{len(perm[:n_train])} ({train_subset_fraction*100:.1f}%)"
             )
-        return create_train_loader(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
+        return create_train_and_val_loader_by_random_split(data_root_folder, task, train_idx, val_idx, train_transforms, val_transforms, 
                                 mini_batch_size, batch_size, num_workers, multi_view) 

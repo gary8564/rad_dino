@@ -72,17 +72,20 @@ def prepare_taixray(path_root: str, output_dir: str):
     # 3) TRAIN/TEST SPLIT
     labels = df_multilabel.columns.tolist()
     df_train = df_multilabel[df_merged['Split'] == 'train'].copy()
+    df_val = df_multilabel[df_merged['Split'] == 'val'].copy()
     df_test = df_multilabel[df_merged['Split'] == 'test'].copy()
 
     # 4) SAVE ANNOTATION FILES
     df_train.to_csv(os.path.join(output_dir, "train_labels.csv"), index=False)
+    df_val.to_csv(os.path.join(output_dir, "val_labels.csv"), index=False)
     df_test.to_csv(os.path.join(output_dir, "test_labels.csv"), index=False)
     
     logger.info(f"Saved train annotations with {len(df_train)} samples.")
+    logger.info(f"Saved val annotations with {len(df_val)} samples.")
     logger.info(f"Saved test annotations with {len(df_test)} samples.")
     
     # 5) SYMLINK PNG IMAGES
-    for split, df in [("train", df_train), ("test", df_test)]:
+    for split, df in [("train", df_train), ("val", df_val), ("test", df_test)]:
         src_folder = os.path.join(path_root, "data")
         dst_folder = os.path.join(output_dir, "images", split)  # Create images subdirectory
         

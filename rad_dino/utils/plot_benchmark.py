@@ -2,9 +2,11 @@ import os
 import numpy as np
 import logging
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+import matplotlib.colors as mcolors
 import seaborn as sns
 import pandas as pd
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, List
 from sklearn.metrics import roc_curve, auc, confusion_matrix, accuracy_score, precision_recall_curve
 from rad_dino.loggings.setup import init_logging
 
@@ -87,10 +89,53 @@ def visualize_evaluate_metrics(y_true: np.ndarray, y_pred: np.ndarray, output_di
     logger.info(f"Specificity: {spec:.2f}")
     return auprc, roc_auc
 
-def visualize_benchmark_results(results, output_dir, classes, metric="AUPRC", task="multi-class"):
+def _parse_model_and_approach(model_name: str) -> Tuple[str, str]:
+    """Derive a clean model name and approach label (LP vs FT) from model_name."""
+    lower = model_name.lower()
+    is_ft = (
+        ("unfrozen" in lower)
+        or ("unfreeze" in lower)
+        or ("fine" in lower)
+        or lower.endswith("(ft)")
+        or (" ft" in lower)
+    )
+    approach = "FT" if is_ft else "LP"
+
+    model = model_name
+    for marker in [
+        "(unfrozen)",
+        "unfreeze_backbone",
+        "unfrozen",
+        "unfreeze",
+        "(ft)",
+        "(FT)",
+        "(fine-tune)",
+        "(fine tuning)",
+        "(fine-tuning)",
+    ]:
+        model = model.replace(marker, "")
+    model = model.replace("--", "-").replace("__", "_").strip().rstrip("-_ ")
+    return model, approach
+
+
+def _lighten_color(color_in, factor: float = 0.65):
+    """Return a lighter shade of the input color by blending towards white.
+
+    factor in [0,1]: higher means more lightening.
     """
-    For multi-label/multi-class, draws a grouped bar chart of AUPRC for each class.
-    For binary classification, draws a single bar per model.
+    rgb = np.asarray(mcolors.to_rgb(color_in))
+    return tuple(1.0 - factor * (1.0 - rgb))
+
+
+def visualize_benchmark_results(results, output_dir, classes, metric="AUPRC", task="multi-label"):
+    """
+    Plot benchmark metrics across classes with optional grouping by model and approach.
+
+    - Binary task: one bar per model
+    - Multi-label/Multi-class: for each class (x-axis), create sub-groups per base model; inside
+      each model sub-group draw two adjacent bars (LP, FT). Bars share a color per model; LP uses
+      a lighter shade, FT uses the saturated/base color. Legends are split into: Model (colors)
+      at the bottom center, and Approach (LP/FT) at the top-right.
     
     Parameters
     ----------
@@ -108,22 +153,18 @@ def visualize_benchmark_results(results, output_dir, classes, metric="AUPRC", ta
     
     assert task in ["binary", "multi-class", "multi-label"], "Invalid task argument."
     
-    flattened = {}
-    
-    # Check if we're dealing with binary classification by examining the first model's data
-    # first_model_data = next(iter(results.values()))
-    # is_binary = not isinstance(next(iter(first_model_data.values())), dict)
-    
-    for model_name, class_dict in results.items():
+    # 1) Flatten the input structure to metric arrays per model key
+    flattened: Dict[str, List[float]] = {}
+    for model_key, class_dict in results.items():
         if task == "binary":
-            flattened[model_name] = class_dict[metric]
+            flattened[model_key] = class_dict[metric]
         else:
-            vals = []
+            values_for_model: List[float] = []
             for cls in classes:
                 if cls not in class_dict:
-                    raise ValueError(f"Class {cls} not found in {model_name}")
-                vals.append(class_dict[cls][metric])
-            flattened[model_name] = vals
+                    raise ValueError(f"Class {cls} not found in {model_key}")
+                values_for_model.append(class_dict[cls][metric])
+            flattened[model_key] = values_for_model
     
     # Prepare figure
     fig, ax = plt.subplots(figsize=(15, 6))
@@ -136,16 +177,71 @@ def visualize_benchmark_results(results, output_dir, classes, metric="AUPRC", ta
     
     model_names = list(flattened.keys())
     n_models = len(model_names)
+    approach_legend_needed = False  
     
     if task == "binary":
-        values = [flattened[m] for m in model_names]
-        x = np.arange(n_models)
-        bar_width = 0.6
+        # Group by base model and approach (LP vs FT)
+        base_groups: Dict[str, Dict[str, Optional[float]]] = {}
+        base_order: List[str] = []
+        for model_key, value in flattened.items():
+            base, approach = _parse_model_and_approach(model_key)
+            if base not in base_groups:
+                base_groups[base] = {"LP": None, "FT": None}
+                base_order.append(base)
+            base_groups[base][approach] = value
+
+        # Approach legend only if any FT exists
+        approach_legend_needed = any(base_groups[base]["FT"] is not None for base in base_order)
+
+        n_bases = len(base_order)
+        x = np.arange(n_bases)
+
+        # Visual sizing for LP/FT pair per base model
+        total_pair_width = 0.65
+        inner_gap = 0.06
+        bar_width = (total_pair_width - inner_gap) / 2.0
+
+        # Color map per base model
         cmap = plt.get_cmap("tab10")
-        colors = [cmap(i) for i in range(n_models)]
-        bars = ax.bar(x, values, bar_width, color=colors)        
+        base_to_color = {base: cmap(i % 10) for i, base in enumerate(base_order)}
+
+        for idx, base in enumerate(base_order):
+            color = base_to_color[base]
+            lp_val = base_groups[base]["LP"]
+            ft_val = base_groups[base]["FT"]
+
+            if (lp_val is not None) and (ft_val is not None):
+                lp_x = x[idx] - (inner_gap + bar_width) / 2.0
+                ft_x = x[idx] + (inner_gap + bar_width) / 2.0
+                lp_w = ft_w = bar_width
+            else:
+                # Single bar centered
+                lp_x = ft_x = x[idx]
+                # Slightly wider when only one approach is present
+                lp_w = ft_w = total_pair_width * (0.95 if not approach_legend_needed else 0.8)
+
+            if lp_val is not None:
+                ax.bar(
+                    lp_x,
+                    lp_val,
+                    lp_w,
+                    color=_lighten_color(color, factor=0.6),
+                    edgecolor="black",
+                    linewidth=0.5,
+                )
+            if ft_val is not None:
+                ax.bar(
+                    ft_x,
+                    ft_val,
+                    ft_w,
+                    color=color,
+                    edgecolor="black",
+                    linewidth=0.5,
+                )
+
+        # Axes text
         ax.set_xticks(x)
-        ax.set_xticklabels(model_names, fontsize=14, fontfamily="sans-serif", rotation=0, ha="center")
+        ax.set_xticklabels(base_order, fontsize=14, fontfamily="sans-serif", rotation=0, ha="center")
         ax.set_title(
             f"Binary classification ({classes[0]})",
             loc="left",
@@ -153,25 +249,117 @@ def visualize_benchmark_results(results, output_dir, classes, metric="AUPRC", ta
             fontfamily="sans-serif",
             color="#000000"
         )
+
+        # Legends
+        model_handles = [Patch(facecolor=base_to_color[base], edgecolor="black", label=base) for base in base_order]
+        fig.legend(
+            handles=model_handles,
+            title="Model",
+            ncol=min(5, max(1, len(base_order))),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.03),
+            frameon=False,
+            fontsize=12
+        )
+        if approach_legend_needed:
+            regimen_handles = [
+                Patch(facecolor="#cfcfcf", edgecolor="black", label="LP"),
+                Patch(facecolor="#6e6e6e", edgecolor="black", label="FT"),
+            ]
+            ax.legend(
+                handles=regimen_handles,
+                title="Approach",
+                loc="upper left",
+                bbox_to_anchor=(0.995, 1.0),
+                frameon=False,
+                fontsize=12
+            )
     else:
+        # 2) Prepare multi-class/multi-label layout
         title = "Multi-label classification" if task == "multi-label" else "Multi-class classification"
         n_classes = len(classes)
-        x = np.arange(n_classes)                     
-        total_width = 0.80
-        bar_width   = total_width / n_models
-        offsets = np.linspace(
-            -total_width/2 + bar_width/2,
-            total_width/2 - bar_width/2,
-            n_models
-        )
-    
-        for idx, (model_name, vals) in enumerate(flattened.items()):
-            ax.bar(
-                x + offsets[idx],
-                vals,
-                bar_width,
-                label=model_name
-            )
+        x = np.arange(n_classes)
+
+        # Group by base model and approach (LP vs FT)
+        base_groups: Dict[str, Dict[str, Optional[List[float]]]] = {}
+        base_order: List[str] = []
+        for model_key, vals in flattened.items():
+            base, approach = _parse_model_and_approach(model_key)
+            if base not in base_groups:
+                base_groups[base] = {"LP": None, "FT": None}
+                base_order.append(base)
+            base_groups[base][approach] = vals
+
+        # Determine whether to show the Approach legend:
+        # show it if ANY fine-tuned (FT) models are present in the keys
+        ft_present = any(base_groups[base]["FT"] is not None for base in base_order)
+        approach_legend_needed = ft_present
+
+        n_bases = len(base_order)
+        total_width = 0.86
+        # gap between different model groups inside each class slot
+        # make groups closer when no FT bars are present
+        between_model_gap = (0.02 if not approach_legend_needed else 0.06) if n_bases > 1 else 0.0
+        group_area = total_width - between_model_gap * max(0, n_bases - 1)
+        group_width = group_area / max(n_bases, 1)
+        # very small inner gap so LP/FT appear as a pair
+        inner_gap = group_width * 0.05
+        bar_width = (group_width - inner_gap) / 2.0
+        single_regimen_width = group_width * (0.95 if not approach_legend_needed else 0.8)
+
+        # Color map: one color per base model
+        cmap = plt.get_cmap("tab10")
+        base_to_color = {base: cmap(i % 10) for i, base in enumerate(base_order)}
+
+        # Compute offsets for each base group (center of LP+FT pair within the class slot)
+        # We center the whole base-group span within [-total_width/2, total_width/2]
+        if n_bases > 0:
+            start = -total_width/2 + group_width/2
+            base_offsets = np.array([start + i * (group_width + between_model_gap) for i in range(n_bases)])
+        else:
+            base_offsets = np.array([])
+
+        # 3) Draw bars per class
+        for base_idx, base in enumerate(base_order):
+            color = base_to_color[base]
+            lp_vals = base_groups[base]["LP"]
+            ft_vals = base_groups[base]["FT"]
+
+            # Positions for the two bars inside the base group
+            center_offset = base_offsets[base_idx]
+            if (lp_vals is not None) and (ft_vals is not None):
+                lp_offset = center_offset - (inner_gap + bar_width) / 2.0
+                ft_offset = center_offset + (inner_gap + bar_width) / 2.0
+            else:
+                # If only one regimen is available, center it within the group
+                lp_offset = center_offset
+                ft_offset = center_offset
+
+            # LP bars (lighter shade)
+            if lp_vals is not None:
+                ax.bar(
+                    x + lp_offset,
+                    lp_vals,
+                    bar_width if (ft_vals is not None) else single_regimen_width,
+                    label=None,
+                    color=_lighten_color(color, factor=0.6),
+                    edgecolor="black",
+                    linewidth=0.5,
+                )
+
+            # FT bars: saturated/base color (no hatch)
+            if ft_vals is not None:
+                ax.bar(
+                    x + ft_offset,
+                    ft_vals,
+                    bar_width if (lp_vals is not None) else single_regimen_width,
+                    label=None,
+                    color=color,
+                    edgecolor="black",
+                    linewidth=0.5,
+                )
+
+        # 4) Titles and ticks
         ax.set_title(
             title,
             loc="left",
@@ -179,209 +367,45 @@ def visualize_benchmark_results(results, output_dir, classes, metric="AUPRC", ta
             fontfamily="sans-serif",
             color="#000000"
         )
+        ax.set_ylim(0.0, 1.0)
         ax.set_xticks(x)
-        xticks = [c.replace(" ", "\n") for c in classes]
+        # Display class names with underscores shown as spaces, then wrap spaces to newlines
+        display_classes = [c.replace("_", " ") for c in classes]
+        xticks = [c.replace(" ", "\n") for c in display_classes]
         ax.set_xticklabels(xticks, fontsize=14, fontfamily="sans-serif")
-        ax.legend(
-            ncol=3,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.15),
+
+        # 5) Legends: one for models (colors), one for approach (grey scale)
+        model_handles = [Patch(facecolor=base_to_color[base], edgecolor="black", label=base) for base in base_order]
+        # Place model legend at the figure bottom (outside axes)
+        fig.legend(
+            handles=model_handles,
+            title="Model",
+            ncol=min(5, max(1, len(base_order))),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.03),
             frameon=False,
             fontsize=12
         )
+
+        if approach_legend_needed:
+            regimen_handles = [
+                Patch(facecolor="#cfcfcf", edgecolor="black", label="LP"),
+                Patch(facecolor="#6e6e6e", edgecolor="black", label="FT"),
+            ]
+            ax.legend(
+                handles=regimen_handles,
+                title="Approach",
+                loc="upper left",
+                bbox_to_anchor=(0.995, 1.0),
+                frameon=False,
+                fontsize=12
+            )
     
-    plt.tight_layout()
+    # 6) Reserve margins (use wider right margin only when approach legend is shown)
+    right_margin = 0.95 if approach_legend_needed else 0.98
+    plt.tight_layout(rect=(0.05, 0.13, right_margin, 0.93))
     os.makedirs(output_dir, exist_ok=True)
-    plt.savefig(os.path.join(output_dir, f"benchmark_results_{metric}.png"), dpi=300)
+    plt.savefig(os.path.join(output_dir, f"benchmark_results_{metric}.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
-
-if __name__ == "__main__":
-    import json
-    # output_dir = "/hpcwork/rwth1833/experiments/RSNA-Pneumonia/"
-    # file_paths = {
-    #     "DINOv2-s":           output_dir + "checkpoints_2025_06_01_225652_RSNA-Pneumonia_dinov2-small/table/metrics.json",
-    #     "DINOv2-b":           output_dir + "checkpoints_2025_06_01_225652_RSNA-Pneumonia_dinov2-base/table/metrics.json",
-    #     "Rad-DINO":               output_dir + "checkpoints_2025_06_01_225815_RSNA-Pneumonia_rad_dino/table/metrics.json",    
-    #     "DINOv2-s(unfrozen)":  output_dir + "checkpoints_2025_06_02_232714_RSNA-Pneumonia_dinov2-small_unfreeze_backbone/table/metrics.json",
-    #     "DINOv2-b(unfrozen)":   output_dir + "checkpoints_2025_06_02_225407_RSNA-Pneumonia_dinov2-base_unfreeze_backbone/table/metrics.json",
-    #     "Rad-DINO(unfrozen)":      output_dir + "checkpoints_2025_06_02_013857_RSNA-Pneumonia_rad_dino_unfreeze_backbone/table/metrics.json",
-    #     }
-    # classes = ["Pneumonia"]
-    output_dir = "/hpcwork/rwth1833/experiments/VinDr-Mammo/"
-    # file_paths = {
-    #     "dinov2-small":           output_dir + "checkpoints_2025_06_01_230221_VinDr-Mammo_dinov2-small/table/metrics.json",
-    #     "dinov2-base":           output_dir + "checkpoints_2025_06_01_231022_VinDr-Mammo_dinov2-base/table/metrics.json",
-    #     "rad_dino":               output_dir + "checkpoints_2025_06_01_230221_VinDr-Mammo_rad_dino/table/metrics.json", 
-    #     "rad_dino-weighted-loss":  output_dir + "checkpoints_2025_06_01_230221_VinDr-Mammo_rad_dino/table/metrics.json",
-    #     "dinov2-small-unfreeze":  output_dir + "checkpoints_2025_06_02_044909_VinDr-Mammo_dinov2-small_unfreeze_backbone/table/metrics.json",
-    #     "dinov2-base-unfreeze":   output_dir + "checkpoints_2025_06_02_073333_VinDr-Mammo_dinov2-base_unfreeze_backbone/table/metrics.json",
-    #     "rad_dino-unfreeze":   output_dir + "checkpoints_2025_06_02_074722_VinDr-Mammo_rad_dino_unfreeze_backbone/table/metrics.json",
-    #     }
-    # classes = [
-    #     "Architectural Distortion",
-    #     "Asymmetry",
-    #     "Mass",
-    #     "No Finding",
-    #     "Skin Thickening",
-    #     "Suspicious Calcification",
-    #     "Suspicious Lymph Node",
-    # ]
-    # output_dir = "/hpcwork/rwth1833/experiments/VinDr-CXR/"
-    # file_paths = {
-    #     "DINOv2-small":           output_dir + "checkpoints_2025_06_01_225652_VinDr-CXR_dinov2-small/table/metrics.json",
-    #     "DINOv2-base":           output_dir + "checkpoints_2025_06_01_225054_VinDr-CXR_dinov2-base/table/metrics.json",
-    #     "Rad-DINO":               output_dir + "checkpoints_2025_06_01_224723_VinDr-CXR_rad_dino/table/metrics.json", 
-    #     "DINOv2-small(unfrozen)":  output_dir + "checkpoints_2025_06_02_044909_VinDr-CXR_dinov2-small_unfreeze_backbone/table/metrics.json",
-    #     "DINOv2-base(unfrozen)":   output_dir + "checkpoints_2025_06_02_044909_VinDr-CXR_dinov2-base_unfreeze_backbone/table/metrics.json",
-    #     "Rad-DINO(unfrozen)":   output_dir + "checkpoints_2025_06_02_020658_VinDr-CXR_rad_dino_unfreeze_backbone/table/metrics.json"
-    #     }
-    # classes = ["Aortic enlargement",
-    #            "Cardiomegaly", 
-    #            "Lung Opacity", 
-    #            "Pleural effusion", 
-    #            "Pleural thickening", 
-    #            "Pulmonary fibrosis", 
-    #            "Tuberculosis", 
-    #            "No finding"]
-    # results_dict = {}
-    # for model_name, path in file_paths.items():
-    #     with open(path, "r") as f:
-    #         results_dict[model_name] = json.load(f)
-    results_dict = {
-        "DINOv2-s": {
-            "BIRADS_1": {
-                "AUROC": 0.5549519130754829,
-                "AUPRC": 0.517545442404735
-            },
-            "BIRADS_2": {
-                "AUROC": 0.5234695427616588,
-                "AUPRC": 0.33648694460989603
-            },
-            "BIRADS_3": {
-                "AUROC": 0.5633288603585633,
-                "AUPRC": 0.13490328670391505
-            },
-            "BIRADS_4": {
-                "AUROC": 0.6299153256195416,
-                "AUPRC": 0.15546265667558806
-            },
-            "BIRADS_5": {
-                "AUROC": 0.8238173646032665,
-                "AUPRC": 0.25494394899893186
-            }
-        },
-        "DINOv2-b": {
-            "BIRADS_1": {
-                "AUROC": 0.5742546926757452,
-                "AUPRC": 0.5329419831636035
-            },
-            "BIRADS_2": {
-                "AUROC": 0.5224936590575356,
-                "AUPRC": 0.3523685909735983
-            },
-            "BIRADS_3": {
-                "AUROC": 0.5627969390345628,
-                "AUPRC": 0.10813592574982232
-            },
-            "BIRADS_4": {
-                "AUROC": 0.6790944422278377,
-                "AUPRC": 0.19815368589037838
-            },
-            "BIRADS_5": {
-                "AUROC": 0.842374616171955,
-                "AUPRC": 0.2329352698642751
-            }
-        },
-        "Rad-DINO": {
-            "BIRADS_1": {
-                "AUROC": 0.5342546926757452,
-                "AUPRC": 0.4929419831636035
-            },
-            "BIRADS_2": {
-                "AUROC": 0.5124936590575356,
-                "AUPRC": 0.303685909735983
-            },
-            "BIRADS_3": {
-                "AUROC": 0.5533288603585633,
-                "AUPRC": 0.12490328670391505
-            },
-            "BIRADS_4": {
-                "AUROC": 0.6099153256195416,
-                "AUPRC": 0.14546265667558806
-            },
-            "BIRADS_5": {
-                "AUROC": 0.8138173646032665,
-                "AUPRC": 0.2229352698642751
-            }
-        },
-        "DINOv2-s(unfrozen)": {
-            "BIRADS_1": {
-                "AUROC": 0.6848586196412283,
-                "AUPRC": 0.642050264859485
-            },
-            "BIRADS_2": {
-                "AUROC": 0.5817187521577617,
-                "AUPRC": 0.40382896376366906
-            },
-            "BIRADS_3": {
-                "AUROC": 0.6915460776846916,
-                "AUPRC": 0.22150501468957934
-            },
-            "BIRADS_4": {
-                "AUROC": 0.7380118514577885,
-                "AUPRC": 0.22144685104016582
-            },
-            "BIRADS_5": {
-                "AUROC": 0.9422811623870766,
-                "AUPRC": 0.643641352078651
-            }
-        },
-        "DINOv2-b(unfrozen)": {
-            "BIRADS_1": {
-                "AUROC": 0.6815781472532045,
-                "AUPRC": 0.6318805726096814
-            },
-            "BIRADS_2": {
-                "AUROC": 0.5826992390869044,
-                "AUPRC": 0.40940190701240875
-            },
-            "BIRADS_3": {
-                "AUROC": 0.6955717549776956,
-                "AUPRC": 0.2171355072017458
-            },
-            "BIRADS_4": {
-                "AUROC": 0.7321600094575224,
-                "AUPRC": 0.2219754536029873
-            },
-            "BIRADS_5": {
-                "AUROC": 0.9522940679097505,
-                "AUPRC": 0.5208486864104054
-            }
-        },
-        "Rad-DINO(unfrozen)": {
-            "BIRADS_1": {
-                "AUROC": 0.6835686196412283,
-                "AUPRC": 0.642050264859485
-            },
-            "BIRADS_2": {
-                "AUROC": 0.5917187521577617,
-                "AUPRC": 0.4082896376366906
-            },
-            "BIRADS_3": {
-                "AUROC": 0.6915460776846916,
-                "AUPRC": 0.21950501468957934
-            },
-            "BIRADS_4": {
-                "AUROC": 0.7340118514577885,
-                "AUPRC": 0.22044685104016582
-            },
-            "BIRADS_5": {
-                "AUROC": 0.9457811623870766,
-                "AUPRC": 0.641352078651
-            }
-        }
-    }
-    classes = ["BIRADS_1", "BIRADS_2", "BIRADS_3", "BIRADS_4", "BIRADS_5"]
-    visualize_benchmark_results(results_dict, output_dir, classes=classes, metric="AUPRC", task="multi-class")
-    visualize_benchmark_results(results_dict, output_dir, classes=classes, metric="AUROC", task="multi-class")
+    

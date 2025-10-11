@@ -1,13 +1,16 @@
 import unittest
 import torch
 import numpy as np
-from rad_dino.data.data_loader import create_train_loader, load_data
+from rad_dino.data.data_loader import (
+    create_train_and_val_loader_by_random_split,
+    load_data,
+)
 
 class TestDataLoader(unittest.TestCase):
     
     @unittest.mock.patch('rad_dino.data.data_loader.RadImageClassificationDataset')
-    def test_create_train_loader(self, mock_dataset_class):
-        """Test create_train_loader function."""
+    def test_create_train_and_val_loader_by_random_split(self, mock_dataset_class):
+        """Test create_train_and_val_loader_by_random_split function."""
         # Mock the dataset
         mock_dataset = unittest.mock.MagicMock()
         mock_dataset.__len__.return_value = 10
@@ -28,8 +31,8 @@ class TestDataLoader(unittest.TestCase):
         batch_size = 8
         num_workers = 2
         
-        # Call create_train_loader
-        train_loader, val_loader = create_train_loader(
+        # Call create_train_and_val_loader_by_random_split
+        train_loader, val_loader = create_train_and_val_loader_by_random_split(
             data_root_folder=data_root_folder,
             task=task,
             train_idx=train_idx,
@@ -97,6 +100,45 @@ class TestDataLoader(unittest.TestCase):
         
         # Check that dataset was created
         mock_dataset_class.assert_called()
+
+    @unittest.mock.patch('rad_dino.data.data_loader.os.path.exists')
+    @unittest.mock.patch('rad_dino.data.data_loader.RadImageClassificationDataset')
+    def test_load_data_with_predefined_val(self, mock_dataset_class, mock_exists):
+        """Test load_data uses predefined val split when val_labels.csv exists."""
+        # Mock existence of val_labels.csv
+        mock_exists.return_value = True
+
+        # Mock the dataset returned instances
+        mock_dataset = unittest.mock.MagicMock()
+        mock_dataset.__len__.return_value = 10
+        mock_dataset_class.return_value = mock_dataset
+
+        # Mock transforms
+        mock_train_transform = unittest.mock.MagicMock()
+        mock_val_transform = unittest.mock.MagicMock()
+
+        # Call load_data
+        result = load_data(
+            data_root_folder="/test/data",
+            task="binary",
+            batch_size=8,
+            train_transforms=mock_train_transform,
+            val_transforms=mock_val_transform,
+            num_workers=2,
+            gradient_accumulation_steps=2,
+            kfold=None,
+            multi_view=False
+        )
+
+        # Should return train_loader, val_loader
+        self.assertIsInstance(result, tuple)
+        self.assertEqual(len(result), 2)
+
+        # Ensure the dataset was invoked with a val split at least once
+        self.assertTrue(
+            any(call.args[1] == "val" for call in mock_dataset_class.call_args_list),
+            "Expected RadImageClassificationDataset to be called with split='val' when val_labels.csv exists"
+        )
 
     @unittest.mock.patch('rad_dino.data.data_loader.RadImageClassificationDataset')
     def test_load_data_kfold_binary(self, mock_dataset_class):

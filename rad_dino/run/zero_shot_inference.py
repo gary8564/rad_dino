@@ -263,7 +263,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--model', type=str, required=True, 
                        choices=['medsiglip', 'ark']) 
     parser.add_argument('--data', type=str, required=True, 
-                       choices=['VinDr-CXR', 'RSNA-Pneumonia', 'TAIX-Ray'])
+                       choices=['VinDr-CXR', 'RSNA-Pneumonia', 'TAIX-Ray', 'VinDr-Mammo'])
     parser.add_argument('--output-path', type=str, required=True,
                        help="Output directory for results")
     parser.add_argument('--batch-size', type=int, default=16,
@@ -368,6 +368,12 @@ def main():
     
     # Get data root folder from config
     data_root_folder = data_config.get_data_root_folder(False)  # No multi-view for zero-shot
+    # If VinDr-Mammo binary, route to binary preprocessed folder if available
+    if args.data == "VinDr-Mammo" and args.task == "binary":
+        candidate_path = data_root_folder.replace("/birads/", "/binary/")
+        if candidate_path != data_root_folder and os.path.exists(candidate_path):
+            data_root_folder = candidate_path
+            logger.info(f"Using VinDr-Mammo binary preprocessed data at: {data_root_folder}")
     
     # Setup dataset
     # For MedSigLIP, use AutoImageProcessor

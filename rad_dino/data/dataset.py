@@ -31,14 +31,14 @@ class RadImageClassificationDataset(Dataset):
                  multi_view: bool = False):
         """
         path_root: root directory of the preprocessed dataset
-        split: specify the data loader to be in "train" dataset or "test" dataset.
+        split: specify the data loader split: "train", "val", or "test".
         task: specify the task of the dataset, either "binary", "multi-class", or "multi-label".
         transform: Any callable that maps an image to a tensor (e.g., torchvision `Compose`). By default, None.
         model_name: name of the model. If None, the image processor will be loaded from the model config.
         multi_view: whether to load multi-view mammography data (4 images per study).
         """
-        if split not in ["train", "test"]:
-            raise AttributeError(f"`split` attribute must be a str type and specified as either `train` or `test`.")
+        if split not in ["train", "val", "test"]:
+            raise AttributeError(f"`split` attribute must be a str type and specified as either `train`, `val`, or `test`.")
         if task not in ["binary", "multiclass", "multilabel"]:
             raise AttributeError(f"`task` attribute must be a str type and specified as either `binary`, `multiclass`, or `multilabel`.")
         if model_name is None and transform is None:

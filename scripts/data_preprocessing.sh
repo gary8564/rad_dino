@@ -47,6 +47,12 @@ python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_birad.py \
     --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view \
     --multi-view
 
+# Preprocess VinDr-Mammo dataset (Binary Classification)
+python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_binary.py \
+    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
+    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/binary/multi_view \
+    --multi-view
+
 # Preprocess TAIX-Ray dataset
 python ./rad_dino/data/TAIXRay/prepare_taixray.py \
     --path-root /hpcwork/rwth1833/datasets/TAIX-Ray/download/ \

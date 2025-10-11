@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=8G 
 #SBATCH --time=1:00:00                 
-#SBATCH --job-name=ark_taixray_zero_shot_eval
-#SBATCH --output=stdout_ark_taixray_zero_shot_eval.txt    
+#SBATCH --job-name=medsiglip_vindrmammo_zero_shot_eval_binary
+#SBATCH --output=stdout_medsiglip_vindrmammo_zero_shot_eval_binary.txt    
 #SBATCH --account=rwth1833              
 
 
@@ -20,9 +20,9 @@ module load GCC/12.2.0
 conda activate rad-dino
 
 ### Configuration
-TASK="multilabel"                       # choices: multilabel | multiclass | binary
-DATA="TAIX-Ray"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
-MODEL="ark"                           # choices: medsiglip | ark
+TASK="binary"                       # choices: multilabel | multiclass | binary
+DATA="VinDr-Mammo"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
+MODEL="medsiglip"                           # choices: medsiglip | ark
 OUTPUT_PATH="/hpcwork/rwth1833/zero_shot_experiments/"
 BATCH_SIZE=32                      # default is 16
 DEVICE="cuda"                      # choices: cuda | cpu

@@ -33,7 +33,7 @@ MAX_GRADCAM_IMAGES = 10
 # Model repository mapping
 MODEL_REPOS = {
     "rad-dino": "microsoft/rad-dino",
-    "dinov2-base": "facebook/dinov2-base", 
+    "dinov2-base": "facebook/dinov2-with-registers-base", #"facebook/dinov2-base", 
     "dinov2-small": "facebook/dinov2-small",
     "medsiglip": "google/medsiglip-448",
     "ark": "microsoft/swin-large-patch4-window12-384-in22k"
