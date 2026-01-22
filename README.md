@@ -20,6 +20,13 @@ conda activate rad-dino
 
 ### 2. Preparing Data
 
+1. [VinDRCXR](https://vindr.ai/cxr)
+
+2. [RSNA-Pneumonia](https://www.kaggle.com/c/rsna-pneumonia-detection-challenge)
+
+3. [TAIX-Ray](https://huggingface.co/datasets/TLAIM/TAIX-Ray)
+
+4. [VinDrMammo](https://vindr.ai/datasets/mammo)
 The details about the pre-training data are described [here](./docs/data/data.md).
 
 
