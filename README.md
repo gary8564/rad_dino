@@ -20,7 +20,7 @@ conda activate rad-dino
 
 ### 2. Preparing Data
 
-The details about the pre-training data are described [here](./docs/data.md).
+The details about the pre-training data are described [here](./docs/data/data.md).
 
 
 ## Training  
