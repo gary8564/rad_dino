@@ -20,7 +20,7 @@ conda activate rad-dino
 
 ### 2. Preparing Data
 
-The details about the pre-training data are described in [docs/data](./docs/data.md).
+The details about the pre-training data are described [here](./docs/data.md).
 
 
 ## Training  
@@ -73,10 +73,5 @@ After setting up the configuration, run:
 chmod +x scripts/eval.sh
 ./scripts/eval.sh
 ```
-
-## Notebooks
-
-
-## References
 
 
