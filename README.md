@@ -27,6 +27,7 @@ conda activate rad-dino
 3. [TAIX-Ray](https://huggingface.co/datasets/TLAIM/TAIX-Ray)
 
 4. [VinDrMammo](https://vindr.ai/datasets/mammo)
+   
 The details about the pre-training data are described [here](./docs/data/data.md).
 
 
