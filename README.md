@@ -1,14 +1,6 @@
-# Master thesis: RAD-DINO
+# Benchmarking different CXR Foundation models
 ## Project description
-
-## Tasks
-1. Benchmark RAD-DINO and DINOv2 on VinDrCXR dataset
-2. Continual training on RAD-DINO
-3. Implement DINOv2 to support 2D grayscale images
-4. Evaluate performance and refine the model (e.g., smaller patch size for improvements)
-5. Extend DINOv2 for MRI Data
-6. MST Benchmark Enhancements (Assess DINOv2 vs. DINOv2-CXR vs. DINOv2-MRI on the DUKE dataset)
-7. Transition to 3D Modeling
+Benchmark [RAD-DINO](https://arxiv.org/abs/2401.10815), [Ark](https://www.sciencedirect.com/science/article/pii/S1361841525003743?via%3Dihub), and [MedSigLip](https://developers.google.com/health-ai-developer-foundations/medsiglip) on different CXR dataset
 
 ## Getting started
 
