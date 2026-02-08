@@ -22,7 +22,8 @@ MODEL_INPUT_SIZES = {
     "dinov2-base": (224, 224),     # DINOv2 expects 224x224
     "dinov2-small": (224, 224),     # DINOv2 expects 224x224
     "medsiglip": (448, 448),    # MedSigLIP expects 448x448
-    "ark": (768, 768)    # Ark expects 768x768
+    "ark": (768, 768),    # Ark expects 768x768
+    "medimageinsight": (480, 480)  # MedImageInsight expects 480x480
 }
 
 

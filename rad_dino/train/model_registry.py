@@ -51,6 +51,24 @@ class UnfreezeMedSigLIPHandler(UnfreezeModelHandler):
     def get_layer_term(self) -> str:
         return 'vision encoder layers'
 
+class UnfreezeMedImageInsightHandler(UnfreezeModelHandler):
+    """
+    Handler for MedImageInsight DaViT image encoder model.
+
+    The backbone is a UniCLModel whose image encoder is a DaViT with 4 stages accessible at model.backbone.image_encoder.blocks[0..3].
+    """
+
+    def get_model_info(self, model) -> Dict[str, Any]:
+        return {
+            'model_type': 'DaViT-UniCL',
+            'total_layers': len(model.backbone.image_encoder.blocks),  # 4 stages
+            'layer_pattern': 'image_encoder.blocks.{}'
+        }
+
+    def get_layer_term(self) -> str:
+        return 'stages'
+
+
 class UnfreezeViTHandler(UnfreezeModelHandler):
     """Handler for ViT models (DINO, RadDINO, etc.)."""
     
@@ -74,16 +92,21 @@ class ModelRegistry:
     def _register_default_unfreezers(self):
         """Register the default unfreezers."""
         self.register_unfreeze_handler('ark', UnfreezeArkHandler())
+        self.register_unfreeze_handler('medimageinsight', UnfreezeMedImageInsightHandler())
         self.register_unfreeze_handler('medsiglip', UnfreezeMedSigLIPHandler())
         self.register_unfreeze_handler('dinov2-base', UnfreezeViTHandler())
         self.register_unfreeze_handler('dinov2-small', UnfreezeViTHandler())
+        self.register_unfreeze_handler('dinov2-large', UnfreezeViTHandler())
+        self.register_unfreeze_handler('dinov3-small-plus', UnfreezeViTHandler())
+        self.register_unfreeze_handler('dinov3-base', UnfreezeViTHandler())
+        self.register_unfreeze_handler('dinov3-large', UnfreezeViTHandler())
         self.register_unfreeze_handler('rad-dino', UnfreezeViTHandler())
     
     def register_unfreeze_handler(self, model_type: str, unfreeze_handler: UnfreezeModelHandler):
         """Register a new unfreeze handler for a specific model type.
         
         Args:
-            model_type: The model type string (e.g., 'ark', 'medsiglip', 'dinov2-base', 'dinov2-small', 'rad-dino')
+            model_type: The model type string (e.g., 'ark', 'medsiglip', 'rad-dino', 'dinov2-base', and other dinov2/dinov3 models)
             unfreeze_handler: The unfreeze handler to register
         """
         self._unfreeze_handlers[model_type] = unfreeze_handler
@@ -141,7 +164,7 @@ def register_unfreeze_handler(model_type: str, unfreeze_handler: UnfreezeModelHa
     """Register a new unfreeze handler with the global registry.
     
     Args:
-        model_type: The model type string (e.g., 'ark', 'medsiglip', 'dino')
+        model_type: The model type string (e.g., 'ark', 'medsiglip', 'rad-dino', 'dinov2-base', and other dinov2/dinov3 models)
         unfreeze_handler: The unfreeze handler to register
     """
     _model_registry.register_unfreeze_handler(model_type, unfreeze_handler)

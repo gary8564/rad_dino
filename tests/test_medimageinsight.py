@@ -1,0 +1,266 @@
+import unittest
+import torch
+import torch.nn as nn
+from unittest.mock import MagicMock
+from rad_dino.models.medimageinsight import MedImageInsightClassifier
+
+
+class TestMedImageInsightClassifier(unittest.TestCase):
+    """Test the MedImageInsightClassifier class with a mock UniCL backbone."""
+
+    def setUp(self):
+        self.num_classes = 5
+        self.batch_size = 2
+        self.embed_dim = 1024  # MedImageInsight projection dim
+        self.image_size = 480  # MedImageInsight input size
+
+        # Create a mock backbone that mimics the UniCLModel interface.
+        # The key attributes/methods the classifier relies on:
+        #   - backbone.image_projection  (nn.Parameter with shape [2048, 1024])
+        #   - backbone.encode_image(x, norm=True)  -> [B, 1024]
+        self.mock_backbone = MagicMock(spec=[])
+        # image_projection is accessed for its .shape to infer embed_dim
+        self.mock_backbone.image_projection = torch.randn(2048, self.embed_dim)
+
+        # encode_image must return a real tensor so the classifier head can
+        # compute logits via matrix multiplication.
+        def _mock_encode_image(x, norm=True):
+            batch_size = x.shape[0]
+            features = torch.randn(batch_size, self.embed_dim)
+            if norm:
+                features = features / features.norm(dim=-1, keepdim=True)
+            return features
+
+        self.mock_backbone.encode_image = _mock_encode_image
+
+    def test_initialization(self):
+        """Test MedImageInsightClassifier initializes correctly."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        self.assertIsNotNone(model)
+        self.assertEqual(model.num_classes, self.num_classes)
+        self.assertEqual(model.embed_dim, self.embed_dim)
+        self.assertFalse(model.multi_view)
+
+    def test_multi_view_initialization(self):
+        """Test initialization with multi-view enabled."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=True,
+            num_views=4,
+            view_fusion_type="mean",
+        )
+        self.assertTrue(model.multi_view)
+        self.assertEqual(model.num_views, 4)
+        self.assertEqual(model.view_fusion_type, "mean")
+
+    def test_single_view_forward(self):
+        """Test forward pass with a single-view input tensor."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        x = torch.randn(self.batch_size, 3, self.image_size, self.image_size)
+        logits, attention_maps = model(x)
+
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertIsNone(attention_maps)
+        self.assertTrue(torch.all(torch.isfinite(logits)))
+
+    def test_single_view_forward_simple_matrix(self):
+        """Test forward pass with a simple deterministic input matrix."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        # Use a simple all-ones tensor
+        x = torch.ones(1, 3, self.image_size, self.image_size)
+        logits, attention_maps = model(x)
+
+        self.assertEqual(logits.shape, (1, self.num_classes))
+        self.assertIsNone(attention_maps)
+        self.assertTrue(torch.all(torch.isfinite(logits)))
+
+    def test_multi_view_forward_mean(self):
+        """Test multi-view forward pass with mean fusion."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=True,
+            num_views=4,
+            view_fusion_type="mean",
+        )
+        x = torch.randn(self.batch_size, 4, 3, self.image_size, self.image_size)
+        logits, attention_maps = model(x)
+
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertIsNone(attention_maps)
+        self.assertTrue(torch.all(torch.isfinite(logits)))
+
+    def test_multi_view_forward_weighted_mean(self):
+        """Test multi-view forward pass with weighted-mean fusion."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=True,
+            num_views=4,
+            view_fusion_type="weighted_mean",
+        )
+        x = torch.randn(self.batch_size, 4, 3, self.image_size, self.image_size)
+        logits, attention_maps = model(x)
+
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertIsNone(attention_maps)
+        self.assertTrue(torch.all(torch.isfinite(logits)))
+
+    def test_multi_view_forward_mlp_adapter(self):
+        """Test multi-view forward pass with MLP adapter fusion."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=True,
+            num_views=4,
+            view_fusion_type="mlp_adapter",
+            adapter_dim=512,
+            view_fusion_hidden_dim=512,
+        )
+        x = torch.randn(self.batch_size, 4, 3, self.image_size, self.image_size)
+        logits, attention_maps = model(x)
+
+        self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+        self.assertIsNone(attention_maps)
+        self.assertTrue(torch.all(torch.isfinite(logits)))
+
+    def test_all_fusion_strategies(self):
+        """Test that all fusion strategies produce correct output shapes."""
+        fusion_strategies = ["mean", "weighted_mean", "mlp_adapter"]
+        for strategy in fusion_strategies:
+            with self.subTest(strategy=strategy):
+                model = MedImageInsightClassifier(
+                    backbone=self.mock_backbone,
+                    num_classes=self.num_classes,
+                    multi_view=True,
+                    num_views=4,
+                    view_fusion_type=strategy,
+                )
+                x = torch.randn(self.batch_size, 4, 3, self.image_size, self.image_size)
+                logits, attention_maps = model(x)
+                self.assertEqual(logits.shape, (self.batch_size, self.num_classes))
+                self.assertIsNone(attention_maps)
+                self.assertTrue(torch.all(torch.isfinite(logits)))
+
+    def test_invalid_fusion_type(self):
+        """Test that an invalid fusion type raises AssertionError."""
+        with self.assertRaises(AssertionError):
+            MedImageInsightClassifier(
+                backbone=self.mock_backbone,
+                num_classes=self.num_classes,
+                multi_view=True,
+                num_views=4,
+                view_fusion_type="invalid_fusion",
+            )
+
+    def test_missing_multi_view_params(self):
+        """Test that missing multi-view params raise AssertionError."""
+        with self.assertRaises(AssertionError):
+            MedImageInsightClassifier(
+                backbone=self.mock_backbone,
+                num_classes=self.num_classes,
+                multi_view=True,
+                num_views=None,
+                view_fusion_type="mean",
+            )
+        with self.assertRaises(AssertionError):
+            MedImageInsightClassifier(
+                backbone=self.mock_backbone,
+                num_classes=self.num_classes,
+                multi_view=True,
+                num_views=4,
+                view_fusion_type=None,
+            )
+
+    def test_single_view_rejects_multi_view_input(self):
+        """Single-view model should reject 5-D input."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        x = torch.randn(self.batch_size, 4, 3, self.image_size, self.image_size)
+        with self.assertRaises(ValueError):
+            model(x)
+
+    def test_multi_view_rejects_single_view_input(self):
+        """Multi-view model should reject 4-D input."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=True,
+            num_views=4,
+            view_fusion_type="mean",
+        )
+        x = torch.randn(self.batch_size, 3, self.image_size, self.image_size)
+        with self.assertRaises(ValueError):
+            model(x)
+
+    def test_head_initialization(self):
+        """Test that the classification head is properly initialised."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        self.assertIsNotNone(model.classifier)
+        self.assertIsInstance(model.classifier, nn.Linear)
+        self.assertEqual(model.classifier.in_features, self.embed_dim)
+        self.assertEqual(model.classifier.out_features, self.num_classes)
+
+    def test_strategy_dictionaries(self):
+        """Test that strategy dictionaries are properly initialised."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        self.assertIsNotNone(model.input_reshape_strategies)
+        self.assertIsNotNone(model.view_fusion_strategies)
+        self.assertIsNotNone(model.normalization_strategies)
+        self.assertTrue(callable(model.input_reshape_strategies[False]))
+        self.assertTrue(callable(model.input_reshape_strategies[True]))
+
+    def test_gradient_flow(self):
+        """Verify that gradients flow through the classifier head."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        x = torch.randn(1, 3, self.image_size, self.image_size)
+        logits, _ = model(x)
+        loss = logits.sum()
+        loss.backward()
+
+        # The classifier head should have gradients
+        self.assertIsNotNone(model.classifier.weight.grad)
+        self.assertIsNotNone(model.classifier.bias.grad)
+
+    def test_binary_classification(self):
+        """Test forward pass with binary classification (1 output)."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=1,
+            multi_view=False,
+        )
+        x = torch.randn(self.batch_size, 3, self.image_size, self.image_size)
+        logits, _ = model(x)
+        self.assertEqual(logits.shape, (self.batch_size, 1))
+
+
+if __name__ == "__main__":
+    unittest.main()

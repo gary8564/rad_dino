@@ -76,6 +76,7 @@ class InferenceConfig:
     attention_threshold: Optional[float] = None
     save_heads: Optional[str] = None
     compute_rollout: bool = False
+    medimageinsight_path: Optional[str] = None
 
 @dataclass
 class ModelWrapper:

@@ -18,6 +18,7 @@ from rad_dino.utils.model_loader import load_pretrained_model
 from rad_dino.models.dino import DinoClassifier
 from rad_dino.models.siglip import MedSigClassifier
 from rad_dino.models.ark import ArkClassifier, load_prtrained_ark_model
+from rad_dino.models.medimageinsight import MedImageInsightClassifier, load_medimageinsight_model
 from rad_dino.loggings.setup import init_logging
 from rad_dino.train.trainer import Trainer
 
@@ -28,19 +29,24 @@ logger = logging.getLogger(__name__)
 
 CURR_DIR = os.path.dirname(os.path.realpath(__file__))
 CURR_TIME = datetime.now().strftime("%Y_%m_%d_%H%M%S")
+DEFAULT_MEDIMAGEINSIGHT_PATH = os.path.normpath(os.path.join(CURR_DIR, "..", "models", "MedImageInsights"))
 MODEL_REPOS = {
     "rad-dino": "microsoft/rad-dino",
     "dinov2-base": "facebook/dinov2-base", 
     "dinov2-small": "facebook/dinov2-small",
+    "dinov2-large": "facebook/dinov2-large",
+    "dinov3-small-plus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
+    "dinov3-base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    "dinov3-large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
     "medsiglip": "google/medsiglip-448",
     "ark": "microsoft/swin-large-patch4-window12-384-in22k"
 }
 
 def get_args_parser(add_help: bool = True):
-    parser = argparse.ArgumentParser("DINOv2 linear probling", add_help=add_help)
+    parser = argparse.ArgumentParser("DINOv2/DINOv3/MedSigLIP/ARK linear probling", add_help=add_help)
     parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary'])
     parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray'])
-    parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'medsiglip', 'ark']) 
+    parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
     parser.add_argument('--multi-view', action='store_true', help="Enable multi-view processing for mammography data")
     parser.add_argument(
@@ -73,6 +79,10 @@ def get_args_parser(add_help: bool = True):
     )
     parser.add_argument(
         "--pretrained-ark-path", type=str, default=None, help="Path to the Ark pre-trained checkpoint file.",
+    )
+    parser.add_argument(
+        "--medimageinsight-path", type=str, default=DEFAULT_MEDIMAGEINSIGHT_PATH,
+        help="Path to the cloned lion-ai/MedImageInsights repository (default: rad_dino/models/MedImageInsights/).",
     )
     parser.add_argument(
         "--output-dir",
@@ -155,8 +165,22 @@ def setup(args, accelerator: Accelerator):
         num_classes = len(set(dataset.labels))  # Get number of classes from dataset
         
     # Model setup
-    model_repo = MODEL_REPOS[args.model]
-    if args.model == "ark":
+    if args.model == "medimageinsight":
+        # MedImageInsight uses a local clone of the lion-ai/MedImageInsights repository
+        backbone = load_medimageinsight_model(
+            model_dir=args.medimageinsight_path,
+            device=str(accelerator.device),
+        )
+        model = MedImageInsightClassifier(
+            backbone,
+            num_classes=num_classes,
+            multi_view=args.multi_view,
+            num_views=multi_view_config.num_views if multi_view_config else None,
+            view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
+            adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
+            view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None,
+        )
+    elif args.model == "ark":
         ark_checkpoint_path = args.pretrained_ark_path
         # Determine if linear probing or fine-tuning 
         # For linear probing: use projector (use_backbone_projector=True)
@@ -190,6 +214,7 @@ def setup(args, accelerator: Accelerator):
                                view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None,
                                use_backbone_projector=use_backbone_projector)
     elif args.model == "medsiglip":
+        model_repo = MODEL_REPOS[args.model]
         backbone = load_pretrained_model(model_repo)
         model = MedSigClassifier(backbone, 
                                num_classes=num_classes, 
@@ -201,6 +226,7 @@ def setup(args, accelerator: Accelerator):
                                return_attentions=args.return_output_attentions,
                                gradient_checkpointing=args.grad_checkpointing)
     else:
+        model_repo = MODEL_REPOS[args.model]
         backbone = load_pretrained_model(model_repo)
         model = DinoClassifier(backbone, 
                                num_classes=num_classes, 
@@ -308,6 +334,12 @@ def main(args):
         raise ValueError("When `--progressive-unfreeze` is specified, `--unfreeze-backbone` must also be specified.")
     if args.model == "ark" and args.pretrained_ark_path is None:
         raise ValueError("Ark checkpoint path must be specified for Ark model. Use --pretrained-ark-path argument.")
+    if args.model == "medimageinsight" and not os.path.isdir(args.medimageinsight_path):
+        raise ValueError(
+            f"MedImageInsight repo not found at '{args.medimageinsight_path}'. "
+            "Clone it first: git lfs install && git clone https://huggingface.co/lion-ai/MedImageInsights "
+            f"{args.medimageinsight_path}"
+        )
     if args.use_bf16 and not args.optimize_compute:
         raise ValueError("`--use-bf16` is only supported when `--optimize-compute` is enabled.")
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True, gradient_as_bucket_view=True)

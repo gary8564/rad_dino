@@ -29,12 +29,17 @@ logger = logging.getLogger(__name__)
 # Constants
 CURR_DIR = os.path.dirname(os.path.realpath(__file__))
 MAX_GRADCAM_IMAGES = 10
+DEFAULT_MEDIMAGEINSIGHT_PATH = os.path.normpath(os.path.join(CURR_DIR, "..", "models", "MedImageInsights"))
 
 # Model repository mapping
 MODEL_REPOS = {
     "rad-dino": "microsoft/rad-dino",
+    "dinov2-large": "facebook/dinov2-large",
     "dinov2-base": "facebook/dinov2-with-registers-base", #"facebook/dinov2-base", 
     "dinov2-small": "facebook/dinov2-small",
+    "dinov3-large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+    "dinov3-base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    "dinov3-small-plus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
     "medsiglip": "google/medsiglip-448",
     "ark": "microsoft/swin-large-patch4-window12-384-in22k"
 }
@@ -47,8 +52,10 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--data', type=str, required=True, 
                        choices=['VinDr-CXR', 'TAIX-Ray', 'RSNA-Pneumonia', 'VinDr-Mammo'])
     parser.add_argument('--model', type=str, required=True, 
-                       choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'medsiglip', 'ark']) 
+                       choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight']) 
     parser.add_argument('--model-path', required=True, type=str)
+    parser.add_argument('--medimageinsight-path', type=str, default=DEFAULT_MEDIMAGEINSIGHT_PATH,
+                       help="Path to the cloned lion-ai/MedImageInsights repository (default: rad_dino/models/MedImageInsights/).")
     parser.add_argument('--output-path', required=True, type=str)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--multi-view', action='store_true', 
@@ -168,7 +175,8 @@ def setup_model(config: InferenceConfig, repo: str, num_classes: int,
     """Setup model"""
     # Load model
     model_wrapper = load_model(config.model_path, config.model, repo, num_classes, accelerator, 
-                              config.show_gradcam, config.show_attention, config.show_lrp, config.multi_view)
+                              config.show_gradcam, config.show_attention, config.show_lrp, config.multi_view,
+                              medimageinsight_path=config.medimageinsight_path)
 
     # Validate ONNX multi-view compatibility
     if config.multi_view and model_wrapper.model_type == 'onnx':
@@ -209,6 +217,10 @@ def run_inference(model_wrapper,
     explainable_visualizer = None
     image_processor = None
     if config.show_attention or config.show_gradcam or config.show_lrp:
+        if model_repo is None:
+            raise ValueError(
+                f"Explainability visualizations (attention/GradCAM/LRP) are not supported for model '{config.model}'."
+            )
         image_processor = AutoImageProcessor.from_pretrained(model_repo)
         explainable_visualizer = ExplainableVisualizer(
             accelerator, output_paths, model_wrapper, image_processor,
@@ -278,6 +290,14 @@ def main():
     parser = get_args_parser()
     args = parser.parse_args()
     
+    # Validate medimageinsight-specific args
+    if args.model == "medimageinsight" and not os.path.isdir(args.medimageinsight_path):
+        raise ValueError(
+            f"MedImageInsight repo not found at '{args.medimageinsight_path}'. "
+            "Clone it first: git lfs install && git clone https://huggingface.co/lion-ai/MedImageInsights "
+            f"{args.medimageinsight_path}"
+        )
+
     # Create configuration object
     config = InferenceConfig(
         task=args.task,
@@ -293,7 +313,8 @@ def main():
         show_gradcam=args.show_gradcam,
         attention_threshold=args.attention_threshold,
         save_heads=args.save_heads,
-        compute_rollout=args.compute_rollout
+        compute_rollout=args.compute_rollout,
+        medimageinsight_path=args.medimageinsight_path
     )
     
     # Validate arguments
@@ -302,10 +323,13 @@ def main():
     # Setup accelerator
     accelerator = Accelerator(mixed_precision="fp16" if config.optimize_compute else "no")
     
-    # Get model repository
-    if config.model not in MODEL_REPOS:
+    # Get model repository (medimageinsight uses local path, not HF repo)
+    if config.model == "medimageinsight":
+        repo = None  # No corresponding HF repo
+    elif config.model not in MODEL_REPOS:
         raise ValueError(f"Model {config.model} is not supported. Please choose from {list(MODEL_REPOS.keys())}.")
-    repo = MODEL_REPOS[config.model]
+    else:
+        repo = MODEL_REPOS[config.model]
     logger.info(f"Running inference with multi_view={config.multi_view}")
     
     # Setup data loader and dataset

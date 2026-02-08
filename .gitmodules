@@ -1,3 +1,0 @@
-[submodule "rad_dino/models/dinov2"]
-	path = rad_dino/models/dinov2
-	url = https://github.com/facebookresearch/dinov2.git

@@ -19,6 +19,14 @@ dinov2:
   interpolation: 3  # BICUBIC
   hf_repo: "facebook/dinov2-base"
 
+dinov3:
+  crop_size: [224, 224]
+  size: 224
+  image_mean: [0.485, 0.456, 0.406]
+  image_std: [0.229, 0.224, 0.225]
+  interpolation: 2
+  hf_repo: "facebook/dinov3-vit7b16-pretrain-lvd1689m"
+
 rad-dino:
   crop_size: [518, 518]
   size: 518
@@ -38,6 +46,13 @@ medsiglip:
 ark:
   crop_size: [768, 768]
   size: 768
+  image_mean: [0.485, 0.456, 0.406]
+  image_std: [0.229, 0.224, 0.225]
+  interpolation: 3  # BICUBIC
+
+medimageinsight:
+  crop_size: [480, 480]
+  size: 480
   image_mean: [0.485, 0.456, 0.406]
   image_std: [0.229, 0.224, 0.225]
   interpolation: 3  # BICUBIC

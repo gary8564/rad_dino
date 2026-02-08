@@ -56,6 +56,8 @@ def get_model_config(model_name: str) -> Dict[str, Any]:
             model_configs = yaml.safe_load(file)
         if "dinov2" in model_name: # For dinov2-base and dinov2-small, use the same dinov2 config
             model_name = "dinov2"
+        elif "dinov3" in model_name: # For dinov3-small-plus, dinov3-base and dinov3-large, use the same dinov3 config
+            model_name = "dinov3"
         return model_configs[model_name].copy()
     except yaml.YAMLError as e:
         raise ValueError(f"Error parsing model configuration file: {e}")

@@ -1,17 +1,14 @@
 #!/usr/bin/zsh 
 
-### SLURM Job Parameters (ignore if running locally)
+### SLURM Job Parameters
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=8G 
-#SBATCH --time=18:00:00
-#SBATCH --time-min=00:15:00         
-#SBATCH --signal=B:TERM@120          
-#SBATCH --requeue                 
-#SBATCH --job-name=ark_vindrcxr_linear_probe_train_subset_10pct
-#SBATCH --output=stdout_ark_vindrcxr_linear_probe_train_subset_10pct.txt    
+#SBATCH --time=24:00:00                 
+#SBATCH --job-name=dinov2-large_vindrcxr_linear_probe
+#SBATCH --output=stdout_dinov2-large_vindrcxr_linear_probe.txt    
 #SBATCH --account=rwth1833              
 
 
@@ -28,19 +25,24 @@ export CUDA_VISIBLE_DEVICES=0
 
 ### Configuration
 # Core experiment settings
-TASK="multilabel"              # e.g., multilabel | multiclass | binary
-DATA="VinDr-CXR"                # e.g., VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
-MODEL="ark"                    # e.g., rad-dino | dinov2-small | dinov2-base | medsiglip | ark
+TASK="multilabel"         # e.g., multilabel | multiclass | binary
+DATA="VinDr-CXR"          # e.g., VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
+MODEL="dinov2-large"      # e.g., rad-dino | dinov2-small | dinov2-base | dinov2-large | dinov3-small-plus | dinov3-base | dinov3-large | medsiglip | ark
 
 # Optional: fraction of training split to use for data-efficiency runs (e.g., 0.10, 0.50). Leave empty for full data.
-TRAIN_SUBSET_FRACTION="0.10"       
+# TRAIN_SUBSET_FRACTION="0.10"       
 
 # Ark-specific configuration (only used if MODEL=ark)
-PRETRAINED_ARK_PATH="/hpcwork/rwth1833/models/ark/Ark+_Nature/Ark6_swinLarge768_ep50.pth.tar"
+PRETRAINED_ARK_PATH="/work/rwth1833/models/ark/Ark+_Nature/Ark6_swinLarge768_ep50.pth.tar"
+
+# MedImageInsight-specific configuration (only used if MODEL=medimageinsight)
+# Default path: rad_dino/models/MedImageInsights/ (clone it there first, see README.md)
+# Override with a custom path if needed:
+# MEDIMAGEINSIGHT_PATH="/custom/path/to/MedImageInsights"
 
 # Resume training from checkpoints
 RESUME=TRUE
-RESUME_CHECKPOINT_DIR="checkpoints_2025_08_12_004616_VinDr-CXR_ark"
+RESUME_CHECKPOINT_DIR="checkpoints_2025_10_19_183045_VinDr-CXR_dinov2-large"
 
 # Unfreeze backbone
 UNFREEZE_BACKBONE=FALSE
@@ -57,6 +59,10 @@ if [[ "$MODEL" == "ark" ]]; then
   EXTRA_ARGS+=" --pretrained-ark-path $PRETRAINED_ARK_PATH"
 fi
 
+if [[ "$MODEL" == "medimageinsight" && -n "$MEDIMAGEINSIGHT_PATH" ]]; then
+  EXTRA_ARGS+=" --medimageinsight-path $MEDIMAGEINSIGHT_PATH"
+fi
+
 if [[ -n "$TRAIN_SUBSET_FRACTION" ]]; then
   EXTRA_ARGS+=" --train-subset $TRAIN_SUBSET_FRACTION"
 fi
@@ -70,4 +76,4 @@ if [[ "$RESUME" == "TRUE" ]]; then
 fi
 
 # Run your program
-python rad_dino/run/train.py --task $TASK --data $DATA --model $MODEL $EXTRA_ARGS
+accelerate launch rad_dino/run/train.py --task $TASK --data $DATA --model $MODEL $EXTRA_ARGS

@@ -16,7 +16,7 @@ conda activate rad-dino
 
 # Preprocess VinDr-CXR dataset
 python ./rad_dino/data/VinDrCXR/prepare_vindrcxr.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-CXR/download/physionet.org/files/vindr-cxr/1.0.0 \
+    --path-root /hpcwork/rwth1833/datasets/VinDr-CXR/1.0.0 \
     --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR \
     --classes \
         "Lung Opacity" \
@@ -36,20 +36,20 @@ python ./rad_dino/data/RSNAPneumonia/prepare_rsna_pneumonia.py \
 
 # Preprocess VinDr-Mammo dataset (Finding Categories)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_multilabel.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
+    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo \
     --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/findings/multi_view \
     --classes 7 \
     --multi-view
 
 # Preprocess VinDr-Mammo dataset (BI-RADS Classification)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_birad.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
+    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo \
     --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view \
     --multi-view
 
 # Preprocess VinDr-Mammo dataset (Binary Classification)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_binary.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
+    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo \
     --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/binary/multi_view \
     --multi-view
 

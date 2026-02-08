@@ -15,7 +15,7 @@ dependencies = [
     "torch==2.6.0",
     "torchvision==0.21.0",
     "torchaudio==2.6.0",
-    "transformers==4.51.3",
+    "transformers>=4.51.3",
     "torchmetrics==1.7.1",
     "matplotlib==3.10.0",
     "matplotlib-inline==0.1.7",
@@ -44,7 +44,8 @@ dependencies = [
     "scikit-image==0.25.2",
     "seaborn==0.13.2",
     "supervision==0.25.1",
-    "sentencepiece==0.2.0"
+    "sentencepiece==0.2.0",
+    "mup>=1.0.0"
 ]
 
 [tool.setuptools.packages.find]

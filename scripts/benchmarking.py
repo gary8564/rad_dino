@@ -147,21 +147,21 @@ def plot_data_efficiency_from_macro(macro_avgs: Dict[str, Dict[str, float]], out
     plt.close(fig)
     return out_path
 
-output_dir = "/hpcwork/rwth1833/experiments/RSNA-Pneumonia/"
-file_paths = {
-    "DINOv2-small":           output_dir + "checkpoints_2025_06_01_225652_RSNA-Pneumonia_dinov2-small/table/metrics.json",
-    "DINOv2-base":           output_dir + "checkpoints_2025_06_01_225652_RSNA-Pneumonia_dinov2-base/table/metrics.json",
-    "Rad-DINO":               output_dir + "checkpoints_2025_06_01_225815_RSNA-Pneumonia_rad_dino/table/metrics.json",    
-    "MedSigLip":              output_dir + "checkpoints_2025_08_10_110543_RSNA-Pneumonia_medsiglip/table/metrics.json",
-    "Ark":                    output_dir + "checkpoints_2025_08_10_110543_RSNA-Pneumonia_ark/table/metrics.json",
-    "DINOv2-small(unfrozen)":  output_dir + "checkpoints_2025_06_02_232714_RSNA-Pneumonia_dinov2-small_unfreeze_backbone/table/metrics.json",
-    "DINOv2-base(unfrozen)":   output_dir + "checkpoints_2025_06_02_225407_RSNA-Pneumonia_dinov2-base_unfreeze_backbone/table/metrics.json",
-    "Rad-DINO(unfrozen)":      output_dir + "checkpoints_2025_06_02_013857_RSNA-Pneumonia_rad_dino_unfreeze_backbone/table/metrics.json",
-    "MedSigLip(unfrozen)":     output_dir + "checkpoints_2025_08_10_110443_RSNA-Pneumonia_medsiglip_unfreeze_backbone/table/metrics.json",
-    "Ark(unfrozen)":           output_dir + "checkpoints_2025_08_10_110443_RSNA-Pneumonia_medsiglip_unfreeze_backbone/table/metrics.json",
-    }
-task = "binary"
-classes = ["Pneumonia"]
+# output_dir = "/hpcwork/rwth1833/experiments/RSNA-Pneumonia/"
+# file_paths = {
+#     "DINOv2-small":           output_dir + "checkpoints_2025_06_01_225652_RSNA-Pneumonia_dinov2-small/table/metrics.json",
+#     "DINOv2-base":           output_dir + "checkpoints_2025_06_01_225652_RSNA-Pneumonia_dinov2-base/table/metrics.json",
+#     "Rad-DINO":               output_dir + "checkpoints_2025_06_01_225815_RSNA-Pneumonia_rad_dino/table/metrics.json",    
+#     "MedSigLip":              output_dir + "checkpoints_2025_08_10_110543_RSNA-Pneumonia_medsiglip/table/metrics.json",
+#     "Ark":                    output_dir + "checkpoints_2025_08_10_110543_RSNA-Pneumonia_ark/table/metrics.json",
+#     "DINOv2-small(unfrozen)":  output_dir + "checkpoints_2025_06_02_232714_RSNA-Pneumonia_dinov2-small_unfreeze_backbone/table/metrics.json",
+#     "DINOv2-base(unfrozen)":   output_dir + "checkpoints_2025_06_02_225407_RSNA-Pneumonia_dinov2-base_unfreeze_backbone/table/metrics.json",
+#     "Rad-DINO(unfrozen)":      output_dir + "checkpoints_2025_06_02_013857_RSNA-Pneumonia_rad_dino_unfreeze_backbone/table/metrics.json",
+#     "MedSigLip(unfrozen)":     output_dir + "checkpoints_2025_08_10_110443_RSNA-Pneumonia_medsiglip_unfreeze_backbone/table/metrics.json",
+#     "Ark(unfrozen)":           output_dir + "checkpoints_2025_08_10_110443_RSNA-Pneumonia_medsiglip_unfreeze_backbone/table/metrics.json",
+#     }
+# task = "binary"
+# classes = ["Pneumonia"]
 
 # output_dir = "/hpcwork/rwth1833/experiments/VinDr-Mammo/"
 # task = "multi-class"
@@ -231,18 +231,24 @@ classes = ["Pneumonia"]
 #     "Ark(unfrozen)":   output_dir + "checkpoints_2025_08_10_014533_VinDr-CXR_ark_unfreeze_backbone/table/metrics.json",
 #     }
 
-# output_dir = "/hpcwork/rwth1833/experiments/TAIX-Ray/"
-# task = "multi-label"
-# file_paths = {
-#     "Rad-DINO":           output_dir + "checkpoints_2025_08_13_014557_TAIX-Ray_dinov2-base/table/metrics.json",
-#     # "Rad-DINO":               output_dir + "checkpoints_2025_08_11_135928_TAIX-Ray_rad-dino/table/metrics.json", 
-#     "MedSigLip":              output_dir + "checkpoints_2025_08_11_140020_TAIX-Ray_medsiglip/table/metrics.json",
-#     "Ark":                    output_dir + "checkpoints_2025_08_11_221119_TAIX-Ray_ark/table/metrics.json",
-#     "Rad-DINO(unfrozen)":   output_dir + "checkpoints_2025_08_14_053434_TAIX-Ray_dinov2-base_unfreeze_backbone/table/metrics.json",
-#     # "Rad-DINO(unfrozen)":   output_dir + "checkpoints_2025_08_11_230242_TAIX-Ray_rad-dino_unfreeze_backbone/table/metrics.json",
-#     "MedSigLip(unfrozen)":   output_dir + "checkpoints_2025_08_11_223131_TAIX-Ray_medsiglip_unfreeze_backbone/table/metrics.json",
-#     "Ark(unfrozen)":   output_dir + "checkpoints_2025_08_13_144443_TAIX-Ray_ark_unfreeze_backbone/table/metrics.json",
-#     }
+output_dir = "/work/rwth1833/experiments/TAIX-Ray/"
+task = "multi-label"
+file_paths = {
+    "DINOv2-base":           output_dir + "checkpoints_2025_08_13_014557_TAIX-Ray_dinov2-base/table/metrics.json",
+    "DINOv2-large":           output_dir + "checkpoints_2025_10_20_010501_TAIX-Ray_dinov2-large/table/metrics.json",
+    "DINOv3-base":           output_dir + "checkpoints_2025_10_20_010546_TAIX-Ray_dinov3-base/table/metrics.json",
+    "DINOv3-large":           output_dir + "checkpoints_2025_10_20_010613_TAIX-Ray_dinov3-large/table/metrics.json",
+    "Rad-DINO":               output_dir + "checkpoints_2025_08_11_135928_TAIX-Ray_rad-dino/table/metrics.json", 
+    "MedSigLip":              output_dir + "checkpoints_2025_08_11_140020_TAIX-Ray_medsiglip/table/metrics.json",
+    "Ark":                    output_dir + "checkpoints_2025_08_11_221119_TAIX-Ray_ark/table/metrics.json",
+    "DINOv2-base(unfrozen)":   output_dir + "checkpoints_2025_08_14_053434_TAIX-Ray_dinov2-base_unfreeze_backbone/table/metrics.json",
+    "DINOv2-large(unfrozen)":   output_dir + "checkpoints_2025_10_20_010501_TAIX-Ray_dinov2-large_unfreeze_backbone/table/metrics.json",
+    "DINOv3-base(unfrozen)":   output_dir + "checkpoints_2025_10_20_010545_TAIX-Ray_dinov3-base_unfreeze_backbone/table/metrics.json",
+    "DINOv3-large(unfrozen)":   output_dir + "checkpoints_2025_10_20_010620_TAIX-Ray_dinov3-large_unfreeze_backbone/table/metrics.json",
+    "Rad-DINO(unfrozen)":   output_dir + "checkpoints_2025_08_11_230242_TAIX-Ray_rad-dino_unfreeze_backbone/table/metrics.json",
+    "MedSigLip(unfrozen)":   output_dir + "checkpoints_2025_08_11_223131_TAIX-Ray_medsiglip_unfreeze_backbone/table/metrics.json",
+    "Ark(unfrozen)":   output_dir + "checkpoints_2025_08_13_144443_TAIX-Ray_ark_unfreeze_backbone/table/metrics.json",
+    }
 
 # output_dir = "/hpcwork/rwth1833/zero_shot_experiments/TAIX-Ray/"
 # task = "multi-label"
@@ -252,11 +258,11 @@ classes = ["Pneumonia"]
 #         }
 
 
-# classes = ["Cardiomegaly", 
-#             "Pulmonary congestion", 
-#             "Pleural effusion", 
-#             "Pulmonary opacities", 
-#             "Atelectasis"]
+classes = ["Cardiomegaly", 
+            "Pulmonary congestion", 
+            "Pleural effusion", 
+            "Pulmonary opacities", 
+            "Atelectasis"]
 
 
 results_dict = {}
