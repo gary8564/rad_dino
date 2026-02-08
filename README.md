@@ -1,5 +1,6 @@
-# Benchmarking 2D CXR foundation models
+# Benchmarking different CXR Foundation models
 ## Project description
+Benchmark DINO-family, [RAD-DINO](https://arxiv.org/abs/2401.10815), [Ark](https://www.sciencedirect.com/science/article/pii/S1361841525003743?via%3Dihub), [MedSigLip](https://developers.google.com/health-ai-developer-foundations/medsiglip), and [MedImageInsight](https://arxiv.org/pdf/2410.06542) on different CXR dataset
 
 ## Getting started
 
@@ -50,7 +51,15 @@ Pass your saved destination path via `--pretrained-ark-path` when running traini
 
 ### 3. Preparing Data
 
-The details about the pre-training data are described in [docs/data](./docs/data.md).
+1. [VinDRCXR](https://vindr.ai/cxr)
+
+2. [RSNA-Pneumonia](https://www.kaggle.com/c/rsna-pneumonia-detection-challenge)
+
+3. [TAIX-Ray](https://huggingface.co/datasets/TLAIM/TAIX-Ray)
+
+4. [VinDrMammo](https://vindr.ai/datasets/mammo)
+   
+The details about the pre-training data are described [here](./docs/data/data.md).
 
 
 ## Training  
@@ -107,10 +116,5 @@ After setting up the configuration, run:
 chmod +x scripts/eval.sh
 ./scripts/eval.sh
 ```
-
-## Notebooks
-
-
-## References
 
 
