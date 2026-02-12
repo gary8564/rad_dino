@@ -47,7 +47,7 @@ def visualize_evaluate_metrics(y_true: np.ndarray, y_pred: np.ndarray, output_di
         plt.close(fig)
     
     # ------------------------------- ROC-AUC ---------------------------------
-    fprs, tprs, _ = roc_curve(y_true, y_pred)
+    fprs, tprs, thresholds = roc_curve(y_true, y_pred)
     roc_auc = auc(fprs, tprs)
     
     fig, axis_roc = plt.subplots(ncols=1, nrows=1, figsize=(6, 6)) if axis is None else (None, axis)
@@ -65,15 +65,22 @@ def visualize_evaluate_metrics(y_true: np.ndarray, y_pred: np.ndarray, output_di
         plt.close(fig)
         
     #  -------------------------- Confusion Matrix -------------------------
-    y_pred = (y_pred >= 0.5).astype(int)
+    # Find optimal threshold via Youden's J statistic (J = TPR - FPR)
+    youden_j = tprs - fprs
+    best_idx = youden_j.argmax()
+    best_thr = float(thresholds[best_idx])
+    logger.info(f"Optimal threshold (Youden's J): {best_thr:.3f}")
+
+    y_pred = (y_pred >= best_thr).astype(int)
     cm = confusion_matrix(y_true, y_pred)
     acc = accuracy_score(y_true, y_pred)
-    sens = cm[1, 1] / (cm[1, 1] + cm[1, 0]) if (cm[1, 1] + cm[1, 0]) > 0 else 0
-    spec = cm[0, 0] / (cm[0, 0] + cm[0, 1]) if (cm[0, 0] + cm[0, 1]) > 0 else 0
+
+    sens = cm[1, 1] / (cm[1, 1] + cm[1, 0]) if cm.shape[0] > 1 and (cm[1, 1] + cm[1, 0]) > 0 else 0
+    spec = cm[0, 0] / (cm[0, 0] + cm[0, 1]) if cm.shape[1] > 1 and (cm[0, 0] + cm[0, 1]) > 0 else 0
     
-    df_cm = pd.DataFrame(cm, columns=['Absent', 'Present'], index=['Absent', 'Present'])
-    fig, axis_cm = plt.subplots(1, 1, figsize=(4, 4)) if axis is None else (None, axis)
-    sns.heatmap(df_cm, ax=axis_cm, cbar=False, fmt='d', annot=True)
+    df_cm = pd.DataFrame(cm, columns=['Negative', 'Positive'], index=['Negative', 'Positive'])
+    fig, axis_cm = plt.subplots(1, 1, figsize=(5, 5)) if axis is None else (None, axis)
+    sns.heatmap(df_cm, ax=axis_cm, cbar=False, fmt='d', annot=True, cmap='Blues')
     axis_cm.set_title(f'Confusion Matrix {title}\nACC={acc:.2f}', fontdict=fontdict)
     axis_cm.set_xlabel('Prediction', fontdict=fontdict)
     axis_cm.set_ylabel('Ground-truth', fontdict=fontdict)
@@ -83,10 +90,10 @@ def visualize_evaluate_metrics(y_true: np.ndarray, y_pred: np.ndarray, output_di
         plt.close(fig)
 
     logger.info(f"------Label {class_label}--------")
-    logger.info(f"Number of GT=1: {np.sum(y_true)}")
+    logger.info(f"Number of positive samples: {np.sum(y_true)}")
     logger.info(f"Confusion Matrix:\n{cm}")
-    logger.info(f"Sensitivity: {sens:.2f}")
-    logger.info(f"Specificity: {spec:.2f}")
+    logger.info(f"Sensitivity: {sens:.3f}")
+    logger.info(f"Specificity: {spec:.3f}")
     return auprc, roc_auc
 
 def _parse_model_and_approach(model_name: str) -> Tuple[str, str]:
@@ -175,8 +182,6 @@ def visualize_benchmark_results(results, output_dir, classes, metric="AUPRC", ta
     ax.set_ylabel(metric, fontsize=20, fontfamily="sans-serif")
     ax.tick_params(axis="y", labelsize=14)
     
-    model_names = list(flattened.keys())
-    n_models = len(model_names)
     approach_legend_needed = False  
     
     if task == "binary":
