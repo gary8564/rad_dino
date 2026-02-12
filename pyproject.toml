@@ -28,7 +28,6 @@ dependencies = [
     "pydicom==3.0.1",
     "wandb==0.19.6",
     "einops==0.8.1",
-    "kaggle==1.7.4",
     "datasets==3.3.2",
     "iterative-stratification==0.1.9",
     "pyyaml==6.0.2",
@@ -45,7 +44,10 @@ dependencies = [
     "seaborn==0.13.2",
     "supervision==0.25.1",
     "sentencepiece==0.2.0",
-    "mup>=1.0.0"
+    "SimpleITK",
+    "mup>=1.0.0",
+    "fvcore",
+    "tenacity"
 ]
 
 [tool.setuptools.packages.find]

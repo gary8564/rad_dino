@@ -45,7 +45,7 @@ MODEL_REPOS = {
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv2/DINOv3/MedSigLIP/ARK linear probling", add_help=add_help)
     parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary'])
-    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray'])
+    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray', 'NODE21'])
     parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
     parser.add_argument('--multi-view', action='store_true', help="Enable multi-view processing for mammography data")

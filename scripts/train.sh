@@ -4,11 +4,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem-per-cpu=8G 
-#SBATCH --time=24:00:00                 
-#SBATCH --job-name=dinov2-large_vindrcxr_linear_probe
-#SBATCH --output=stdout_dinov2-large_vindrcxr_linear_probe.txt    
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=120G
+#SBATCH --time=06:00:00                 
+#SBATCH --job-name=medimageinsight_rsna_linear_probe
+#SBATCH --output=stdout_medimageinsight_rsna_linear_probe.txt    
 #SBATCH --account=rwth1833              
 
 
@@ -25,9 +25,9 @@ export CUDA_VISIBLE_DEVICES=0
 
 ### Configuration
 # Core experiment settings
-TASK="multilabel"         # e.g., multilabel | multiclass | binary
-DATA="VinDr-CXR"          # e.g., VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
-MODEL="dinov2-large"      # e.g., rad-dino | dinov2-small | dinov2-base | dinov2-large | dinov3-small-plus | dinov3-base | dinov3-large | medsiglip | ark
+TASK="binary"             # e.g., multilabel | multiclass | binary
+DATA="RSNA-Pneumonia"     # e.g., VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray | NODE21
+MODEL="medimageinsight"   # e.g., rad-dino | dinov2-small | dinov2-base | dinov2-large | dinov3-small-plus | dinov3-base | dinov3-large | medsiglip | ark | medimageinsight
 
 # Optional: fraction of training split to use for data-efficiency runs (e.g., 0.10, 0.50). Leave empty for full data.
 # TRAIN_SUBSET_FRACTION="0.10"       
@@ -41,8 +41,8 @@ PRETRAINED_ARK_PATH="/work/rwth1833/models/ark/Ark+_Nature/Ark6_swinLarge768_ep5
 # MEDIMAGEINSIGHT_PATH="/custom/path/to/MedImageInsights"
 
 # Resume training from checkpoints
-RESUME=TRUE
-RESUME_CHECKPOINT_DIR="checkpoints_2025_10_19_183045_VinDr-CXR_dinov2-large"
+RESUME=FALSE
+# RESUME_CHECKPOINT_DIR="checkpoints_..."
 
 # Unfreeze backbone
 UNFREEZE_BACKBONE=FALSE

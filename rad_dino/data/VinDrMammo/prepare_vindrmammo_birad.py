@@ -6,6 +6,7 @@ import logging
 import numpy as np
 from typing import Union, List, Dict, Tuple
 from rad_dino.loggings.setup import init_logging
+from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -94,33 +95,24 @@ def create_multi_view_structure(df_agg: pd.DataFrame, output_dir: str, split: st
     dst_folder = os.path.join(output_dir, "images", split)
     os.makedirs(dst_folder, exist_ok=True)
     
+    symlink_pairs = []
     for study_id, row in df_agg.iterrows():
         image_ids = row['image_id']
         lateralities = row['laterality']
         view_positions = row['view_position']
         
-        # Create study directory
         study_dir = os.path.join(dst_folder, study_id)
         os.makedirs(study_dir, exist_ok=True)
         
-        # Create symlinks for all 4 images of this study
         for i, image_id in enumerate(image_ids):
             laterality = lateralities[i]
             view_pos = view_positions[i]
-            
-            # Source path
             src_file = os.path.join(src_images_folder, study_id, f"{image_id}.dicom")
-            
-            if not os.path.exists(src_file):
-                raise FileNotFoundError(f"Image file for {image_id} not found at {src_file}")
-            
-            # Destination path with descriptive name
             dst = os.path.join(study_dir, f"{laterality}_{view_pos}.dcm")
-            if not os.path.exists(dst):
-                os.symlink(src_file, dst)
-            else:
-                os.remove(dst)
-                os.symlink(src_file, dst)
+            symlink_pairs.append((src_file, dst))
+    
+    create_symlinks_parallel(symlink_pairs, raise_on_missing=True)
+    logger.info(f"Symlinked {len(symlink_pairs)} multi-view images to {dst_folder}")
 
 def main():
     # 0) PARSE ARGUMENTS
@@ -178,24 +170,13 @@ def main():
         for split, df_agg in [("train", df_train_agg), ("test", df_test_agg)]:
             dst_folder = os.path.join(args.output_dir, "images", split)
             os.makedirs(dst_folder, exist_ok=True)
-            
-            for image_id in df_agg.index:
-                # Get the study_id for this image_id
-                study_id = df_agg.loc[image_id, 'study_id']
-                
-                # Construct the source path: images/{study_id}/{image_id}.dicom
-                src_file = os.path.join(src_images_folder, study_id, f"{image_id}.dicom")
-                
-                if not os.path.exists(src_file):
-                    raise FileNotFoundError(f"Image file for {image_id} not found at {src_file}")
-                    
-                # Create symlink with .dcm extension for consistency
-                dst = os.path.join(dst_folder, f"{image_id}.dcm")
-                if not os.path.exists(dst):
-                    os.symlink(src_file, dst)
-                else:
-                    os.remove(dst)
-                    os.symlink(src_file, dst)
+            symlink_pairs = [
+                (os.path.join(src_images_folder, df_agg.loc[image_id, 'study_id'], f"{image_id}.dicom"),
+                 os.path.join(dst_folder, f"{image_id}.dcm"))
+                for image_id in df_agg.index
+            ]
+            create_symlinks_parallel(symlink_pairs, raise_on_missing=True)
+            logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
     
     logger.info(f"Preprocessing VinDr-Mammo BI-RADS complete!")
     logger.info(f"Multi-view: {args.multi_view}")

@@ -4,6 +4,7 @@ import pandas as pd
 import logging
 from typing import Union
 from rad_dino.loggings.setup import init_logging
+from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -87,25 +88,16 @@ def prepare_taixray(path_root: str, output_dir: str):
     # 5) SYMLINK PNG IMAGES
     for split, df in [("train", df_train), ("val", df_val), ("test", df_test)]:
         src_folder = os.path.join(path_root, "data")
-        dst_folder = os.path.join(output_dir, "images", split)  # Create images subdirectory
-        
-        # Create destination directory if it doesn't exist
+        dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
         
-        for _, row in df.iterrows():
-            uid = row['image_id']
-            src = os.path.join(src_folder, f"{uid}.png")
-            dst = os.path.join(dst_folder, f"{uid}.png")
-            
-            if os.path.exists(src):
-                if not os.path.exists(dst):
-                    os.symlink(src, dst)
-                else:
-                    # Remove existing symlink and create new one
-                    os.remove(dst)
-                    os.symlink(src, dst)
-            else:
-                logger.warning(f"Source image not found: {src}")
+        symlink_pairs = [
+            (os.path.join(src_folder, f"{row['image_id']}.png"),
+             os.path.join(dst_folder, f"{row['image_id']}.png"))
+            for _, row in df.iterrows()
+        ]
+        create_symlinks_parallel(symlink_pairs)
+        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
     
     logger.info(f"Preprocessing TAIX-Ray complete! The processed dataset is saved in {output_dir}")
     logger.info(f"Classes: {labels}")

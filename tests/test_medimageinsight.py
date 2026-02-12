@@ -1,3 +1,4 @@
+import os
 import unittest
 import torch
 import torch.nn as nn
@@ -260,6 +261,49 @@ class TestMedImageInsightClassifier(unittest.TestCase):
         x = torch.randn(self.batch_size, 3, self.image_size, self.image_size)
         logits, _ = model(x)
         self.assertEqual(logits.shape, (self.batch_size, 1))
+
+
+class TestMedImageInsight(unittest.TestCase):
+    """
+    Test on real MedImageInsight UniCL backbone
+    """
+
+    DEFAULT_MODEL_DIR = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "rad_dino", "models", "MedImageInsights")
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.model_dir = os.environ.get("MEDIMAGEINSIGHT_PATH", cls.DEFAULT_MODEL_DIR)
+        if not os.path.isdir(cls.model_dir):
+            raise unittest.SkipTest(
+                f"MedImageInsight repo not found at {cls.model_dir}. "
+                "Set MEDIMAGEINSIGHT_PATH or clone the repo."
+            )
+        if not torch.cuda.is_available():
+            raise unittest.SkipTest("CUDA not available; skipping integration test.")
+
+        from rad_dino.models.medimageinsight import load_medimageinsight_model
+        cls.device = "cuda"
+        cls.backbone = load_medimageinsight_model(cls.model_dir, device=cls.device)
+
+    def test_real_backbone_single_view_forward(self):
+        """Forward pass through backbone with a small random input."""
+        num_classes = 1  # binary, like RSNA-Pneumonia
+        model = MedImageInsightClassifier(
+            backbone=self.backbone,
+            num_classes=num_classes,
+            multi_view=False,
+        ).to(self.device)
+
+        # Minimal batch: 1 image, 480x480
+        x = torch.randn(1, 3, 480, 480, device=self.device)
+        with torch.no_grad():
+            logits, attn = model(x)
+
+        self.assertEqual(logits.shape, (1, num_classes))
+        self.assertIsNone(attn)
+        self.assertTrue(torch.all(torch.isfinite(logits)))
 
 
 if __name__ == "__main__":

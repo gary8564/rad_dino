@@ -57,3 +57,9 @@ python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_binary.py \
 python ./rad_dino/data/TAIXRay/prepare_taixray.py \
     --path-root /hpcwork/rwth1833/datasets/TAIX-Ray/download/ \
     --output-dir /hpcwork/rwth1833/datasets/preprocessed/TAIX-Ray
+
+# Preprocess NODE21 dataset
+python ./rad_dino/data/Node21/preprocess_node21.py \
+    --path-root /hpcwork/rwth1833/datasets/NODE21/cxr_images/proccessed_data \
+    --output-dir /hpcwork/rwth1833/datasets/preprocessed/NODE21 \
+    --test-size 0.2

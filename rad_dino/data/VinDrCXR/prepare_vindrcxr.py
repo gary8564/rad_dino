@@ -4,6 +4,7 @@ import pandas as pd
 import logging
 from typing import Union
 from rad_dino.loggings.setup import init_logging
+from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -85,16 +86,14 @@ def prepare_vindrcxr(path_root: str, output_dir: str, class_labels: Union[int, s
     for split, df in [("train", df_train_agg), ("test", df_test_agg)]:
         src_folder = os.path.join(path_root, split)
         dst_folder = os.path.join(output_dir, "images", split)
-        # Create destination directory if it doesn't exist
         os.makedirs(dst_folder, exist_ok=True)
-        for image_id in df.index:
-            src = os.path.join(src_folder, f"{image_id}.dicom")
-            dst = os.path.join(dst_folder, f"{image_id}.dcm")
-            if not os.path.exists(dst):
-                os.symlink(src, dst)
-            else:
-                os.remove(dst)
-                os.symlink(src, dst)
+        symlink_pairs = [
+            (os.path.join(src_folder, f"{image_id}.dicom"),
+             os.path.join(dst_folder, f"{image_id}.dcm"))
+            for image_id in df.index
+        ]
+        create_symlinks_parallel(symlink_pairs)
+        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
     logger.info(f"Preprocessing VinDr-CXR complete! The processed dataset is saved in {output_dir}")
 
 def main():

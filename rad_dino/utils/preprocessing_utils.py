@@ -1,9 +1,51 @@
 import numpy as np
+import logging
 import pydicom
 import matplotlib.pyplot as plt
 import cv2
+import os
 from pydicom.pixels import apply_rescale, apply_voi_lut
 from PIL import Image
+from typing import Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from rad_dino.loggings.setup import init_logging
+init_logging()
+logger = logging.getLogger(__name__)
+
+def create_symlinks_parallel(
+    symlink_pairs: Sequence[tuple[str, str]],
+    max_workers: int = 16,
+    raise_on_missing: bool = False,
+) -> None:
+    """
+    Create symlinks in parallel using a thread pool.
+
+    Args:
+        symlink_pairs: Sequence of (src, dst) path pairs.
+        max_workers: Number of threads to use.
+        raise_on_missing: If True, raise FileNotFoundError when a source file
+            is missing. If False, log a warning and skip.
+    """
+    def _create_one(src: str, dst: str) -> str | None:
+        if not os.path.exists(src):
+            if raise_on_missing:
+                raise FileNotFoundError(f"Source image not found: {src}")
+            return f"Source image not found: {src}"
+        if os.path.exists(dst) or os.path.islink(dst):
+            os.remove(dst)
+        os.symlink(src, dst)
+        return None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_create_one, src, dst): src
+            for src, dst in symlink_pairs
+        }
+        for future in as_completed(futures):
+            warning = future.result()
+            if warning:
+                logger.warning(warning)
 
 def dicom2array(path, voi_lut = True, fix_monochrome = True):
     """

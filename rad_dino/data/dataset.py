@@ -4,15 +4,57 @@ import torch
 import torchvision.transforms.v2 as transforms
 import numpy as np
 import logging
+import SimpleITK as sitk
 from transformers import AutoImageProcessor
 from typing import Optional, Callable
 from PIL import Image
 from torch.utils.data import Dataset
-from rad_dino.utils.preprocessing_utils import dicom2array, uint16_to_uint8
 from rad_dino.utils.config_utils import get_model_config
 from rad_dino.loggings.setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
+
+# Supported image file extensions for SimpleITK loading
+SUPPORTED_EXTENSIONS = ('.dcm', '.dicom', '.png', '.jpg', '.jpeg', '.mha', '.mhd')
+
+
+def load_image_from_path(img_path: str) -> Image.Image:
+    """
+    Unified 2D image loader using SimpleITK. Handles all formats supported by SimpleITK
+    including DICOM (.dcm), MetaImage (.mha, .mhd), PNG, JPEG, etc.
+    
+    Args:
+        img_path: Path to the image file.
+        
+    Returns:
+        PIL Image in grayscale ("L") mode with pixel values in [0, 255].
+        
+    Raises:
+        ValueError: If the image is a 3D volume (ndim > 2).
+    """
+    sitk_image = sitk.ReadImage(img_path)
+    img_array = sitk.GetArrayFromImage(sitk_image).astype(np.float64)
+    
+    # SimpleITK often wraps single-slice DICOMs as (1, H, W).
+    # Squeeze singleton dimensions if any, then reject 3D volumes.
+    img_array = np.squeeze(img_array)
+    if img_array.ndim > 2:
+        raise ValueError(
+            f"Expected a 2D image but got {img_array.ndim}D volume with shape {img_array.shape} "
+            f"from '{img_path}'. This repository only supports 2D chest X-ray images."
+        )
+    
+    # Normalize to [0, 255]
+    img_min, img_max = img_array.min(), img_array.max()
+    if img_max - img_min > 0:
+        img_array = (img_array - img_min) / (img_max - img_min) * 255.0
+    else:
+        raise ValueError(
+            f"Image has constant pixel value {img_min} and cannot be normalized: '{img_path}'. "
+            "The file is likely corrupted."
+        )
+    img_array = img_array.astype(np.uint8)
+    return Image.fromarray(img_array)
 
 def load_image_processor(model_name: str) -> AutoImageProcessor:
     """
@@ -38,13 +80,13 @@ class RadImageClassificationDataset(Dataset):
         multi_view: whether to load multi-view mammography data (4 images per study).
         """
         if split not in ["train", "val", "test"]:
-            raise AttributeError(f"`split` attribute must be a str type and specified as either `train`, `val`, or `test`.")
+            raise AttributeError("`split` attribute must be a str type and specified as either `train`, `val`, or `test`.")
         if task not in ["binary", "multiclass", "multilabel"]:
-            raise AttributeError(f"`task` attribute must be a str type and specified as either `binary`, `multiclass`, or `multilabel`.")
+            raise AttributeError("`task` attribute must be a str type and specified as either `binary`, `multiclass`, or `multilabel`.")
         if model_name is None and transform is None:
-            raise AttributeError(f"`model_name` attribute must be specified when no transforms are applied.")
+            raise AttributeError("`model_name` attribute must be specified when no transforms are applied.")
         if model_name is not None and transform is not None:
-           logging.warning(f"""`model_name`(AutoImageProcessor) and `transform`(torchvision.transforms) attributes are specified at the same time. 
+           logging.warning("""`model_name`(AutoImageProcessor) and `transform`(torchvision.transforms) attributes are specified at the same time. 
                            `transform` has the priority over the `model_name`. AutoImageProcessor will be ignored.""")
         
         self.model_name = model_name
@@ -72,7 +114,7 @@ class RadImageClassificationDataset(Dataset):
             self.labels = self.df["label"].tolist()
             
         
-        self.dicom_root = os.path.join(self.path_root, "images", split)
+        self.img_dir = os.path.join(self.path_root, "images", split)
         self.sample_ids = self.df.index.to_list()  # study_id for multi-view and image_id for single-view
         self.transform = transform
 
@@ -118,28 +160,19 @@ class RadImageClassificationDataset(Dataset):
                 imgs = imgs.squeeze(0)  # [1, 4, C, H, W] -> [4, C, H, W]
         else:
             # Load single image
-            # extension check (.dcm, .png, .jpg, .jpeg)
-            extensions = ['.dcm', '.dicom', '.png', '.jpg', '.jpeg']
             img_path = None
-            
-            for ext in extensions:
-                path = os.path.join(self.dicom_root, f"{sample_id}{ext}")
+            for ext in SUPPORTED_EXTENSIONS:
+                path = os.path.join(self.img_dir, f"{sample_id}{ext}")
                 if os.path.exists(path):
                     img_path = path
                     break
             
             if img_path is None:
                 raise FileNotFoundError(
-                    f"No image found for id {sample_id} in {self.dicom_root} with extensions {extensions}"
+                    f"No image found for id {sample_id} in {self.img_dir} with extensions {SUPPORTED_EXTENSIONS}"
                 )
             
-            # Load image based on extension
-            if img_path.endswith('.dcm') or img_path.endswith('.dicom'):
-                img = dicom2array(img_path)
-                pil_image = Image.fromarray(img)
-            else:
-                # PNG/JPG/JPEG: load with PIL and convert to RGB
-                pil_image = uint16_to_uint8(img_path)
+            pil_image = load_image_from_path(img_path)
 
             if self.transform:
                 imgs = self.transform(pil_image.convert("RGB"))
@@ -161,19 +194,15 @@ class RadImageClassificationDataset(Dataset):
         Returns:
             pil_images: list of PIL images
         """
-        study_dir = os.path.join(self.dicom_root, study_id)
+        study_dir = os.path.join(self.img_dir, study_id)
         
         # Define the expected view files (Left CC, Left MLO, Right CC, Right MLO)
         view_names = ['L_CC', 'L_MLO', 'R_CC', 'R_MLO']
-        extensions = ['.dcm', '.dicom', '.png', '.jpg', '.jpeg']
         
-        # Initialize lists to store images
         pil_images = []
-        
         for view_name in view_names:
-            # Try to find the view file with different extensions
             view_path = None
-            for ext in extensions:
+            for ext in SUPPORTED_EXTENSIONS:
                 path = os.path.join(study_dir, f"{view_name}{ext}")
                 if os.path.exists(path):
                     view_path = path
@@ -181,16 +210,11 @@ class RadImageClassificationDataset(Dataset):
             
             if view_path is None:
                 raise FileNotFoundError(
-                    f"Multi-view image not found for {view_name} in {study_dir} with extensions {extensions}"
+                    f"Multi-view image not found for {view_name} in {study_dir} with extensions {SUPPORTED_EXTENSIONS}"
                 )
             
-            # Load the view based on extension
-            if view_path.endswith('.dcm') or view_path.endswith('.dicom'):
-                view_img = dicom2array(view_path)
-                view_pil = Image.fromarray(view_img)
-            else:
-                # PNG/JPG/JPEG: load with PIL and convert to numpy array
-                view_pil = uint16_to_uint8(view_path)
+            # Unified loading via SimpleITK for all formats
+            view_pil = load_image_from_path(view_path)
             
             pil_images.append(view_pil)
         
@@ -205,37 +229,44 @@ if __name__ == "__main__":
     print(f"Number of training data: {len(ds_train.sample_ids)}")
     print(f"Number of test data: {len(ds_test.sample_ids)}")
     
-    path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR"
-    class_labels = ["Lung Opacity", "Cardiomegaly", "Pleural thickening", "Aortic enlargement", "Pleural effusion", "Pulmonary fibrosis", "Tuberculosis", "No finding"]
-    ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", model_name="rad-dino")
-    ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", model_name="rad-dino")
-    print("VinDr-CXR...")
-    assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
-    print(f"Number of training data: {len(ds_train.sample_ids)}")
-    print(f"Number of test data: {len(ds_test.sample_ids)}")
+    # path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR"
+    # class_labels = ["Lung Opacity", "Cardiomegaly", "Pleural thickening", "Aortic enlargement", "Pleural effusion", "Pulmonary fibrosis", "Tuberculosis", "No finding"]
+    # ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", model_name="rad-dino")
+    # ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", model_name="rad-dino")
+    # print("VinDr-CXR...")
+    # assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
+    # print(f"Number of training data: {len(ds_train.sample_ids)}")
+    # print(f"Number of test data: {len(ds_test.sample_ids)}")
     
-    path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/findings/multi_view"
-    class_labels = ['Architectural Distortion', 'Asymmetry', 'Mass', 'No Finding', 'Skin Thickening', 'Suspicious Calcification', 'Suspicious Lymph Node']
-    ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", multi_view=True, model_name="rad-dino")
-    ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", multi_view=True, model_name="rad-dino")
-    print("VinDr-Mammo...")
-    assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
-    print(f"Number of training data: {len(ds_train.sample_ids)}")
-    print(f"Number of test data: {len(ds_test.sample_ids)}")
+    # path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/findings/multi_view"
+    # class_labels = ['Architectural Distortion', 'Asymmetry', 'Mass', 'No Finding', 'Skin Thickening', 'Suspicious Calcification', 'Suspicious Lymph Node']
+    # ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", multi_view=True, model_name="rad-dino")
+    # ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", multi_view=True, model_name="rad-dino")
+    # print("VinDr-Mammo...")
+    # assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
+    # print(f"Number of training data: {len(ds_train.sample_ids)}")
+    # print(f"Number of test data: {len(ds_test.sample_ids)}")
     
-    path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view"
-    ds_train = RadImageClassificationDataset(path_root, "train", "multiclass", multi_view=True, model_name="rad-dino")
-    ds_test = RadImageClassificationDataset(path_root, "test", "multiclass", multi_view=True, model_name="rad-dino")
-    print("VinDr-Mammo BIRADS (Multi-view)...")
-    print(f"Number of training studies: {len(ds_train.sample_ids)}")
-    print(f"Number of test studies: {len(ds_test.sample_ids)}")
-    print(f"Labels: {set(ds_train.labels)}")
+    # path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view"
+    # ds_train = RadImageClassificationDataset(path_root, "train", "multiclass", multi_view=True, model_name="rad-dino")
+    # ds_test = RadImageClassificationDataset(path_root, "test", "multiclass", multi_view=True, model_name="rad-dino")
+    # print("VinDr-Mammo BIRADS (Multi-view)...")
+    # print(f"Number of training studies: {len(ds_train.sample_ids)}")
+    # print(f"Number of test studies: {len(ds_test.sample_ids)}")
+    # print(f"Labels: {set(ds_train.labels)}")
     
-    path_root = "/hpcwork/rwth1833/datasets/preprocessed/TAIX-Ray"
-    class_labels = ["Cardiomegaly", "Pulmonary congestion", "Pleural effusion", "Pulmonary opacities", "Atelectasis"]
-    ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", model_name="rad-dino")
-    ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", model_name="rad-dino")
-    print("TAIX-Ray...")
-    assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
+    # path_root = "/hpcwork/rwth1833/datasets/preprocessed/TAIX-Ray"
+    # class_labels = ["Cardiomegaly", "Pulmonary congestion", "Pleural effusion", "Pulmonary opacities", "Atelectasis"]
+    # ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", model_name="rad-dino")
+    # ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", model_name="rad-dino")
+    # print("TAIX-Ray...")
+    # assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
+    # print(f"Number of training data: {len(ds_train.sample_ids)}")
+    # print(f"Number of test data: {len(ds_test.sample_ids)}")
+    
+    path_root = "/hpcwork/rwth1833/datasets/preprocessed/NODE21"
+    ds_train = RadImageClassificationDataset(path_root, "train", "binary", model_name="rad-dino")
+    ds_test = RadImageClassificationDataset(path_root, "test", "binary", model_name="rad-dino")
+    print("NODE21...")
     print(f"Number of training data: {len(ds_train.sample_ids)}")
     print(f"Number of test data: {len(ds_test.sample_ids)}")

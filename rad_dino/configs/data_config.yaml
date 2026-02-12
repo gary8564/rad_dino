@@ -4,7 +4,7 @@ VinDr-CXR:
 
 RSNA-Pneumonia:
   data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/RSNA-Pneumonia"
-  num_workers: 4
+  num_workers: 16
 
 VinDr-Mammo:
   data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/single_view"
@@ -18,4 +18,8 @@ VinDr-Mammo:
 
 TAIX-Ray:
   data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/TAIX-Ray"
+  num_workers: 4
+
+NODE21:
+  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/NODE21"
   num_workers: 4

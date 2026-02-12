@@ -4,6 +4,7 @@ import pandas as pd
 import logging
 from typing import Union
 from rad_dino.loggings.setup import init_logging
+from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
 from sklearn.model_selection import train_test_split
 init_logging()
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ def prepare_rsna_pneumonia(path_root: str, output_dir: str, test_size: float):
     Preprocess the RSNA-Pneumonia dataset.
     """
     if test_size <= 0 or test_size >= 1 or not isinstance(test_size, float):
-        raise AttributeError(f"`test_size` attribute must be a float type between 0 and 1.")
+        raise AttributeError("`test_size` attribute must be a float type between 0 and 1.")
         
     # 1) LOAD AND MAJORITY-VOTE PER PATIENT
     labels_path = os.path.join(path_root, "stage_2_train_labels.csv")
@@ -58,14 +59,13 @@ def prepare_rsna_pneumonia(path_root: str, output_dir: str, test_size: float):
     for split, df_split in [("train", train_df), ("test", test_df)]:
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
-        for image_id in df_split["image_id"]:
-            src = os.path.join(src_folder, f"{image_id}.dcm")
-            dst = os.path.join(dst_folder, f"{image_id}.dcm")
-            if not os.path.exists(dst):
-                os.symlink(src, dst)
-            else:
-                os.remove(dst)
-                os.symlink(src, dst)
+        symlink_pairs = [
+            (os.path.join(src_folder, f"{image_id}.dcm"),
+             os.path.join(dst_folder, f"{image_id}.dcm"))
+            for image_id in df_split["image_id"]
+        ]
+        create_symlinks_parallel(symlink_pairs)
+        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
     logger.info(f"Preprocessing RSNA-Pneumonia complete! The processed dataset is saved in {output_dir}")
 
 def main():
