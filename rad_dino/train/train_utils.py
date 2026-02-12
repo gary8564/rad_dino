@@ -5,6 +5,7 @@ import os
 from typing import Optional, Union
 from accelerate import Accelerator
 from torchmetrics import Accuracy, AUROC, AveragePrecision, F1Score
+from rad_dino.utils.model_loader import _migrate_state_dict_keys
 init_logging()
 logger = logging.getLogger(__name__)
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -173,8 +174,8 @@ class EarlyStopping:
         try:
             # Load checkpoint with proper device placement
             ckpt = torch.load(self.ckpt_path, map_location='cpu')
-            # Load state dict to model
-            model.load_state_dict(ckpt["model_state"])
+            # Load state dict to model (migrate legacy keys if needed)
+            model.load_state_dict(_migrate_state_dict_keys(ckpt["model_state"]))
             return model
         except Exception as e:
             logger.error(f"Failed to load checkpoint: {e}")

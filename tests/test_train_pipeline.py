@@ -8,6 +8,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from accelerate import Accelerator
 from rad_dino.train.trainer import Trainer
+from rad_dino.utils.data_utils import collate_fn
 
 # --- Test Helpers ---
 
@@ -76,7 +77,7 @@ def get_trainer(model=None, args=None, accelerator=None):
         }
     }
     
-    accelerator = accelerator or Accelerator()
+    accelerator = accelerator or Accelerator(cpu=True)
     return Trainer(
         model=model or DummyModel(), criterion=nn.BCEWithLogitsLoss(),
         eval_metrics=eval_metrics, train_config=train_config,
@@ -91,7 +92,7 @@ class TestTrainer(unittest.TestCase):
     
     def setUp(self):
         self.trainer = get_trainer()
-        self.data_loader = DataLoader(DummyDataset(), batch_size=4)
+        self.data_loader = DataLoader(DummyDataset(), batch_size=4, collate_fn=collate_fn)
         self.data_loader = self.trainer.accelerator.prepare(self.data_loader)
         
     def tearDown(self):
@@ -135,7 +136,7 @@ class TestTrainer(unittest.TestCase):
         """Test multi-view training and evaluation."""
         trainer = get_trainer(DummyModel(multi_view=True))
         ds = DummyDataset(multi_view=True)
-        data_loader = DataLoader(ds, batch_size=4)
+        data_loader = DataLoader(ds, batch_size=4, collate_fn=collate_fn)
         data_loader = trainer.accelerator.prepare(data_loader)
         
         optimizer = torch.optim.AdamW(trainer.model.parameters(), lr=0.001)

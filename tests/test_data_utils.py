@@ -15,7 +15,10 @@ class TestDataUtils(unittest.TestCase):
             (torch.randn(3, 224, 224), torch.tensor([1.0]), "img3"),
         ]
         
-        pixel_values, targets, sample_ids = collate_fn(batch)
+        result = collate_fn(batch)
+        pixel_values = result["pixel_values"]
+        targets = result["labels"]
+        sample_ids = result["sample_ids"]
         
         # Check shapes
         self.assertEqual(pixel_values.shape, (3, 3, 224, 224))  # [B, C, H, W]
@@ -38,7 +41,10 @@ class TestDataUtils(unittest.TestCase):
             (torch.randn(4, 3, 224, 224), torch.tensor([0.0, 1.0]), "study2"),
         ]
         
-        pixel_values, targets, sample_ids = collate_fn(batch)
+        result = collate_fn(batch)
+        pixel_values = result["pixel_values"]
+        targets = result["labels"]
+        sample_ids = result["sample_ids"]
         
         # Check shapes
         self.assertEqual(pixel_values.shape, (2, 4, 3, 224, 224))  # [B, 4, C, H, W]
@@ -66,8 +72,8 @@ class TestDataUtils(unittest.TestCase):
             (torch.randn(3, 224, 224), torch.tensor([0.0]), "img2"),
         ]
         
-        pixel_values, targets, sample_ids = collate_fn(batch)
-        self.assertEqual(pixel_values.shape, (2, 3, 224, 224))
+        result = collate_fn(batch)
+        self.assertEqual(result["pixel_values"].shape, (2, 3, 224, 224))
         
         # Multi-view batch
         batch = [
@@ -75,8 +81,19 @@ class TestDataUtils(unittest.TestCase):
             (torch.randn(4, 3, 224, 224), torch.tensor([0.0, 1.0]), "study2"),
         ]
         
-        pixel_values, targets, sample_ids = collate_fn(batch)
-        self.assertEqual(pixel_values.shape, (2, 4, 3, 224, 224))
+        result = collate_fn(batch)
+        self.assertEqual(result["pixel_values"].shape, (2, 4, 3, 224, 224))
+    
+    def test_collate_fn_returns_dict(self):
+        """Test that collate_fn returns a dict with expected keys."""
+        batch = [
+            (torch.randn(3, 224, 224), torch.tensor([1.0]), "img1"),
+        ]
+        result = collate_fn(batch)
+        self.assertIsInstance(result, dict)
+        self.assertIn("pixel_values", result)
+        self.assertIn("labels", result)
+        self.assertIn("sample_ids", result)
     
     def test_collate_fn_empty_batch(self):
         """Test collate function with empty batch."""
@@ -104,4 +121,4 @@ class TestDataUtils(unittest.TestCase):
             collate_fn(batch)
 
 if __name__ == "__main__":
-    unittest.main() 
+    unittest.main()

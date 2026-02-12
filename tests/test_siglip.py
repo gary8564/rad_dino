@@ -1,8 +1,7 @@
 import unittest
 import torch
 import torch.nn as nn
-from unittest.mock import Mock, patch, MagicMock
-from transformers import AutoConfig
+from unittest.mock import Mock
 from rad_dino.models.siglip import MedSigClassifier
 
 
@@ -52,7 +51,8 @@ class TestMedSigClassifier(unittest.TestCase):
         model = MedSigClassifier(
             backbone=self.mock_backbone,
             num_classes=self.num_classes,
-            multi_view=False
+            multi_view=False,
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 3, 224, 224)
@@ -85,7 +85,8 @@ class TestMedSigClassifier(unittest.TestCase):
             num_classes=self.num_classes,
             multi_view=True,
             num_views=4,
-            view_fusion_type="mean"
+            view_fusion_type="mean",
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)  # [batch, views, channels, height, width]
@@ -103,7 +104,8 @@ class TestMedSigClassifier(unittest.TestCase):
             num_classes=self.num_classes,
             multi_view=True,
             num_views=4,
-            view_fusion_type="weighted_mean"
+            view_fusion_type="weighted_mean",
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)
@@ -113,7 +115,7 @@ class TestMedSigClassifier(unittest.TestCase):
         self.assertEqual(attention_maps.shape, (27, self.batch_size, 4, 16, 1024, 1024))
         self.assertEqual(model.view_fusion_type, "weighted_mean")
         self.assertIsNotNone(model.view_scores)
-        self.assertIsNotNone(model.fusion_layer)
+        self.assertIsNotNone(model.view_fusion_layer)
         
     def test_medsig_classifier_mlp_adapter_fusion(self):
         """Test MedSigClassifier with MLP adapter fusion."""
@@ -124,7 +126,8 @@ class TestMedSigClassifier(unittest.TestCase):
             num_views=4,
             view_fusion_type="mlp_adapter",
             adapter_dim=256,
-            view_fusion_hidden_dim=512
+            view_fusion_hidden_dim=512,
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)
@@ -134,7 +137,7 @@ class TestMedSigClassifier(unittest.TestCase):
         self.assertEqual(attention_maps.shape, (27, self.batch_size, 4, 16, 1024, 1024))
         self.assertEqual(model.view_fusion_type, "mlp_adapter")
         self.assertIsNotNone(model.view_adapters)
-        self.assertIsNotNone(model.fusion_layer)
+        self.assertIsNotNone(model.view_fusion_layer)
         
     def test_medsig_classifier_invalid_fusion_type(self):
         """Test MedSigClassifier with invalid fusion type."""
@@ -237,12 +240,11 @@ class TestMedSigClassifier(unittest.TestCase):
             multi_view=False
         )
         
-        # Check that head exists and has correct output dimension
-        self.assertIsNotNone(model.head)
-        # Check that the head is a Sequential with the correct final layer
-        self.assertIsInstance(model.head, nn.Sequential)
-        self.assertIsInstance(model.head[-1], nn.Linear)
-        self.assertEqual(model.head[-1].out_features, self.num_classes)
+        # Check that classifier head exists and has correct dimensions
+        self.assertIsNotNone(model.classifier)
+        self.assertIsInstance(model.classifier, nn.Linear)
+        self.assertEqual(model.classifier.in_features, self.feat_dim)
+        self.assertEqual(model.classifier.out_features, self.num_classes)
         
     def test_medsig_classifier_strategy_dictionaries(self):
         """Test MedSigClassifier strategy dictionary initialization."""
@@ -301,7 +303,8 @@ class TestMedSigClassifierIntegration(unittest.TestCase):
         model = MedSigClassifier(
             backbone=self.mock_backbone,
             num_classes=self.num_classes,
-            multi_view=False
+            multi_view=False,
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 3, 224, 224)
@@ -318,7 +321,8 @@ class TestMedSigClassifierIntegration(unittest.TestCase):
             num_classes=self.num_classes,
             multi_view=True,
             num_views=4,
-            view_fusion_type="mean"
+            view_fusion_type="mean",
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)
@@ -339,7 +343,8 @@ class TestMedSigClassifierIntegration(unittest.TestCase):
                     num_classes=self.num_classes,
                     multi_view=True,
                     num_views=4,
-                    view_fusion_type=fusion_type
+                    view_fusion_type=fusion_type,
+                    return_attentions=True
                 )
                 
                 x = torch.randn(self.batch_size, 4, 3, 224, 224)

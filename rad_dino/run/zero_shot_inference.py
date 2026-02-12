@@ -4,7 +4,8 @@ import torch
 import logging
 import json
 from tqdm import tqdm
-from typing import List, Dict, Any, Optional, Tuple
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoModel
@@ -17,6 +18,7 @@ from rad_dino.eval.evaluation_processor import EvaluationProcessor
 from rad_dino.configs.config import OutputPaths
 from rad_dino.models.ark import load_prtrained_ark_model
 from rad_dino.models.medimageinsight import load_medimageinsight_model
+from rad_dino.models.biomedclip import load_biomedclip_model, get_biomedclip_tokenizer
 from rad_dino.utils.transforms import get_transforms
 from rad_dino.data.label_mapping import class_labels_mapping
 from rad_dino.configs.ark_zero_shot_config import ARK_PRETRAINED_TASKS
@@ -31,156 +33,30 @@ logger = logging.getLogger(__name__)
 CURR_DIR = os.path.dirname(os.path.realpath(__file__))
 DEFAULT_MEDIMAGEINSIGHT_PATH = os.path.normpath(os.path.join(CURR_DIR, "..", "models", "MedImageInsights"))
 
-class MedSigLIPZeroShotClassifier:    
+class BaseVLMZeroShotClassifier(ABC):
+    """
+    Abstract base for CLIP-style VLM zero-shot classifiers.
+    """
+
     def __init__(self, device: str = "cuda"):
-        """
-        Initialize the MedSigLIP zero-shot classifier.
-        
-        Args:
-            model_name: HuggingFace model name for MedSigLIP
-            device: Device to run inference on
-        """
-        if not torch.cuda.is_available() and device == "cuda":
-            logging.warning("CUDA is not available. Using CPU for inference.")
-            device = "cpu"
-        self.device = torch.device(device)
-        self.tokenizer = AutoTokenizer.from_pretrained("google/medsiglip-448")
-        self.model = AutoModel.from_pretrained("google/medsiglip-448")
-        self.model.to(self.device)
-        self.model.eval()
-            
-    def predict(self, images: torch.Tensor, text_prompts: List[str]) -> torch.Tensor:
-        """
-        Perform zero-shot prediction on a batch of pre-processed images.
-        
-        Args:
-            images: Pre-processed image tensors from dataset [B, C, H, W]
-            text_prompts: List of text prompts for classification
-            
-        Returns:
-            logits_per_image: Image-text similarity scores
-        """
-        # Process text prompts only
-        text_inputs = self.tokenizer(
-            text_prompts,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-        text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
-        
-        # Move images to device
-        images = images.to(self.device)
-        
-        # Forward pass with pre-processed images and tokenized text
-        with torch.no_grad():
-            outputs = self.model(
-                pixel_values=images,
-                input_ids=text_inputs["input_ids"],
-                attention_mask=text_inputs["attention_mask"]
-            )
-        
-        logits_per_image = outputs.logits_per_image # image-text similarity scores
-        return logits_per_image
-    
-    def run_zero_shot_inference(self, 
-                                data_loader: DataLoader, 
-                                evaluation_processor: EvaluationProcessor, 
-                                text_prompts: Optional[List[str]] = None) -> Dict[str, Any]:
-        """
-        Run zero-shot inference on the dataset.
-        
-        Args:
-            data_loader: DataLoader for test data
-            evaluation_processor: EvaluationProcessor for saving results
-            text_prompts: Text prompts for classification (for MedSigLIP)
-            
-        Returns:
-            metrics
-        """
-        for batch_idx, batch in enumerate(tqdm(data_loader, desc="Zero-shot inference...")):
-            images = batch["pixel_values"]
-            labels = batch["labels"]
-            image_ids = batch["sample_ids"]
-            # Get predictions 
-            logits = self.predict(images, text_prompts)
-            # For binary tasks, extract the positive-class logit
-            if evaluation_processor.task == "binary" and text_prompts is not None and len(text_prompts) >= 2:
-                # Apply softmax to get probabilities 
-                probs = torch.softmax(logits, dim=1)
-                # Take the positive-class probability
-                # Ensure that the prompts order is negative then positive 
-                prob_pos = probs[:, -1]
-                eps = 1e-6
-                logits = torch.logit(torch.clamp(prob_pos, eps, 1 - eps)).unsqueeze(1)
-            # Add batch results to evaluation processor
-            evaluation_processor.add_batch_results(image_ids, labels, logits)
-        # Process and save results using evaluation processor
-        metrics = evaluation_processor.process_and_save_results()
-        return metrics
-    
-class MedImageInsightZeroShotClassifier:
-    """
-    Initialize the MedImageInsight (UniCL) zero-shot classifier.
-    """
-
-    def __init__(self, model_dir: str, device: str = "cuda"):
-        """
-        Initialize the MedImageInsight zero-shot classifier.
-        
-        Args:
-            model_dir: Absolute path to the cloned lion-ai/MedImageInsights repository.
-            device: Device to run inference on.
-        """
         if not torch.cuda.is_available() and device == "cuda":
             logging.warning("CUDA is not available. Using CPU for inference.")
             device = "cpu"
         self.device = torch.device(device)
 
-        # Load the full UniCL model (image encoder + language encoder + projections)
-        self.model = load_medimageinsight_model(model_dir, device=device)
-        self.model.eval()
-
-        # Tokenizer is stored on the model itself (built during model construction)
-        self.tokenizer = self.model.tokenizer
-        self.max_length = self.model.conf_lang_encoder["CONTEXT_LENGTH"]
-
-    def _tokenize(self, text_prompts: List[str]) -> dict:
-        """Tokenize text prompts and move tensors to device."""
-        text_tokens = self.tokenizer(
-            text_prompts,
-            padding="max_length",
-            max_length=self.max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        return {k: v.to(self.device) for k, v in text_tokens.items()}
-
+    @abstractmethod
     def predict(self, images: torch.Tensor, text_prompts: List[str]) -> torch.Tensor:
         """
-        Perform zero-shot prediction on a batch of pre-processed images.
-        
-        Computes image-text cosine similarity scaled by the learned temperature parameter:
-            logits = (image_features @ text_features.T) * exp(logit_scale)
+        Compute image-text similarity logits for a single batch.
 
         Args:
-            images: Pre-processed image tensors from dataset [B, C, H, W].
+            images: Pre-processed image tensors ``[B, C, H, W]``.
             text_prompts: List of text prompts for classification.
-            
+
         Returns:
-            logits_per_image: Image-text similarity scores [B, num_prompts].
+            logits_per_image: ``[B, num_prompts]``
         """
-        text_tokens = self._tokenize(text_prompts)
-        images = images.to(self.device)
-
-        with torch.no_grad():
-            image_features, text_features, temperature = self.model(
-                image=images, text=text_tokens
-            )
-            logits_per_image = image_features @ text_features.t() * temperature
-
-        return logits_per_image
+        ...
 
     def run_zero_shot_inference(
         self,
@@ -189,34 +65,126 @@ class MedImageInsightZeroShotClassifier:
         text_prompts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Run zero-shot inference on the dataset.
-        
-        Args:
-            data_loader: DataLoader for test data.
-            evaluation_processor: EvaluationProcessor for saving results.
-            text_prompts: Text prompts for classification.
-            
-        Returns:
-            metrics
+        Run zero-shot inference over the full dataset.
+
+        For binary tasks, prompt of neg/pos class labels is needed (ordered negative-first, positive-last), 
+        the positive-class probability is then extracted via 
+        softmax -> inverse-sigmoid so that ``EvaluationProcessor`` recovers the correct probability via sigmoid.
         """
-        for batch_idx, batch in enumerate(tqdm(data_loader, desc="Zero-shot inference...")):
+        for batch in tqdm(data_loader, desc="Zero-shot inference..."):
             images = batch["pixel_values"]
             labels = batch["labels"]
             image_ids = batch["sample_ids"]
 
             logits = self.predict(images, text_prompts)
 
-            # For binary tasks, extract the positive-class logit
-            if evaluation_processor.task == "binary" and text_prompts is not None and len(text_prompts) >= 2:
+            # Binary task: convert 2-class softmax → single sigmoid logit
+            if (
+                evaluation_processor.task == "binary"
+                and text_prompts is not None
+                and len(text_prompts) >= 2
+            ):
                 probs = torch.softmax(logits, dim=1)
                 prob_pos = probs[:, -1]
                 eps = 1e-6
-                logits = torch.logit(torch.clamp(prob_pos, eps, 1 - eps)).unsqueeze(1)
+                logits = torch.logit(
+                    torch.clamp(prob_pos, eps, 1 - eps)
+                ).unsqueeze(1)
 
             evaluation_processor.add_batch_results(image_ids, labels, logits)
 
         metrics = evaluation_processor.process_and_save_results()
         return metrics
+
+
+# ---------------------------------------------------------------------------
+# Concrete VLM zero-shot classifiers
+# ---------------------------------------------------------------------------
+
+
+class MedSigLIPZeroShotClassifier(BaseVLMZeroShotClassifier):
+    """Zero-shot classifier using MedSigLIP (HuggingFace SigLIP)."""
+
+    def __init__(self, device: str = "cuda"):
+        super().__init__(device)
+        self.tokenizer = AutoTokenizer.from_pretrained("google/medsiglip-448")
+        self.model = AutoModel.from_pretrained("google/medsiglip-448")
+        self.model.to(self.device)
+        self.model.eval()
+
+    def predict(self, images: torch.Tensor, text_prompts: List[str]) -> torch.Tensor:
+        text_inputs = self.tokenizer(
+            text_prompts,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
+        images = images.to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model(
+                pixel_values=images,
+                input_ids=text_inputs["input_ids"],
+                attention_mask=text_inputs["attention_mask"],
+            )
+        return outputs.logits_per_image
+
+
+class MedImageInsightZeroShotClassifier(BaseVLMZeroShotClassifier):
+    """Zero-shot classifier using MedImageInsight (UniCL two-tower model)."""
+
+    def __init__(self, model_dir: str, device: str = "cuda"):
+        super().__init__(device)
+        self.model = load_medimageinsight_model(model_dir, device=device)
+        self.model.eval()
+        self.tokenizer = self.model.tokenizer
+        self.max_length = self.model.conf_lang_encoder["CONTEXT_LENGTH"]
+
+    def _tokenize(self, text_prompts: List[str]) -> dict:
+        """Tokenize text prompts and move tensors to device."""
+        tokens = self.tokenizer(
+            text_prompts,
+            padding="max_length",
+            max_length=self.max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        return {k: v.to(self.device) for k, v in tokens.items()}
+
+    def predict(self, images: torch.Tensor, text_prompts: List[str]) -> torch.Tensor:
+        text_tokens = self._tokenize(text_prompts)
+        images = images.to(self.device)
+
+        with torch.no_grad():
+            image_features, text_features, temperature = self.model(
+                image=images, text=text_tokens
+            )
+            logits_per_image = image_features @ text_features.t() * temperature
+        return logits_per_image
+
+
+class BiomedCLIPZeroShotClassifier(BaseVLMZeroShotClassifier):
+    """Zero-shot classifier using BiomedCLIP (open_clip ViT-B/16 + PubMedBERT)."""
+
+    def __init__(self, device: str = "cuda"):
+        super().__init__(device)
+        self.model, _ = load_biomedclip_model(device=device)
+        self.model.eval()
+        self.tokenizer = get_biomedclip_tokenizer()
+        self.context_length = 256  # BiomedCLIP default context length
+
+    def predict(self, images: torch.Tensor, text_prompts: List[str]) -> torch.Tensor:
+        texts = self.tokenizer(
+            text_prompts, context_length=self.context_length
+        ).to(self.device)
+        images = images.to(self.device)
+
+        with torch.no_grad():
+            image_features, text_features, logit_scale = self.model(images, texts)
+            logits_per_image = logit_scale * image_features @ text_features.t()
+        return logits_per_image
 
 
 class ArkZeroShotClassifier:
@@ -364,7 +332,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--task', type=str, required=True, 
                        choices=['multilabel', 'multiclass', 'binary'])
     parser.add_argument('--model', type=str, required=True, 
-                       choices=['medsiglip', 'ark', 'medimageinsight']) 
+                       choices=['medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--data', type=str, required=True, 
                        choices=['VinDr-CXR', 'RSNA-Pneumonia', 'TAIX-Ray', 'VinDr-Mammo'])
     parser.add_argument('--output-path', type=str, required=True,
@@ -387,7 +355,7 @@ def get_args_parser() -> argparse.ArgumentParser:
 
 def validate_args(args: argparse.Namespace) -> None:
     """Validate command line arguments"""
-    if args.model in ("medsiglip", "medimageinsight"):
+    if args.model in ("medsiglip", "medimageinsight", "biomedclip"):
         if args.custom_text_prompts is None:
             raise ValueError(f"Custom text prompts must be specified with `--model {args.model}`.")
         if not os.path.exists(args.custom_text_prompts):
@@ -482,7 +450,17 @@ def main():
         text_prompts = get_text_prompts(args.custom_text_prompts, args.data, args.task)
         if len(text_prompts) == 0:
             raise ValueError(f"No prompts available for dataset '{args.data}' and task '{args.task}'")
-        
+
+    elif args.model == "biomedclip":
+        # Initialize BiomedCLIP zero-shot classifier
+        classifier = BiomedCLIPZeroShotClassifier(
+            device=args.device
+        )
+        # Load custom prompts
+        text_prompts = get_text_prompts(args.custom_text_prompts, args.data, args.task)
+        if len(text_prompts) == 0:
+            raise ValueError(f"No prompts available for dataset '{args.data}' and task '{args.task}'")
+
     else:
         raise ValueError(f"Model '{args.model}' is not supported for zero-shot inference")
     
@@ -500,8 +478,8 @@ def main():
     
     # Setup dataset
     # For MedSigLIP, use AutoImageProcessor
-    # For Ark and MedImageInsight, use torchvision.transforms.Compose
-    if args.model in ("ark", "medimageinsight"):
+    # For Ark, MedImageInsight, and BiomedCLIP, use torchvision.transforms.Compose
+    if args.model in ("ark", "medimageinsight", "biomedclip"):
         model_name = None
         _, test_transforms = get_transforms(model_name=args.model)
     else:
@@ -537,7 +515,7 @@ def main():
         
     # Run zero-shot inference
     logger.info(f"Starting zero-shot inference on {len(dataset)} samples")
-    if args.model in ("medsiglip", "medimageinsight"):
+    if args.model in ("medsiglip", "medimageinsight", "biomedclip"):
         results = classifier.run_zero_shot_inference(test_loader, evaluation_processor, text_prompts)
     elif args.model == "ark":
         if args.use_rsna_head:

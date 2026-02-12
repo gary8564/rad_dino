@@ -33,8 +33,6 @@ dependencies = [
     "pyyaml==6.0.2",
     "accelerate==1.9.0",
     "grad-cam==1.5.5",
-    "onnx==1.18.0",
-    "onnxruntime-gpu==1.22.0",
     "lxt==2.1",
     "huggingface_hub==0.34.3",
     "safetensors==0.5.3",
@@ -47,7 +45,8 @@ dependencies = [
     "SimpleITK",
     "mup>=1.0.0",
     "fvcore",
-    "tenacity"
+    "tenacity",
+    "open-clip-torch>=2.23.0"
 ]
 
 [tool.setuptools.packages.find]

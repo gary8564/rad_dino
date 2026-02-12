@@ -6,7 +6,7 @@ from rad_dino.utils.visualization.visualize_siglip_attention import visualize_si
 from rad_dino.utils.visualization.visualize_swin_attention import visualize_swin_attention_maps
 from rad_dino.utils.visualization.visualize_lrp import visualize_lrp_maps
 from rad_dino.utils.visualization.visualize_gradcam import visualize_gradcam
-from rad_dino.models.dino import DinoClassifier
+from rad_dino.models.base import BaseClassifier
 import logging
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ def _parse_save_heads(save_heads_arg: Optional[str] = None) -> Union[str, int]:
     else:
         raise ValueError(f"Invalid save_heads argument: {save_heads_arg}. Must be 'mean', 'max', 'min', or a positive integer.")
 
-def _run_gradcam_visualization(model: DinoClassifier, 
+def _run_gradcam_visualization(model: BaseClassifier, 
                                images: torch.Tensor, 
                                image_ids: List[str], 
                                class_labels: List, 
@@ -77,10 +77,10 @@ class ExplainableVisualizer:
             self.image_mean = torch.tensor(image_processor.image_mean).view(3, 1, 1)
             self.image_std = torch.tensor(image_processor.image_std).view(3, 1, 1)
     
-    def run_gradcam_visualization(self, model: DinoClassifier, images: torch.Tensor, 
+    def run_gradcam_visualization(self, model: BaseClassifier, images: torch.Tensor, 
                                  image_ids: List[str], class_labels: List) -> None:
         """Run GradCAM visualization if enabled"""
-        if not self.show_gradcam or self.model_wrapper.model_type == 'onnx':
+        if not self.show_gradcam:
             return
             
         _run_gradcam_visualization(
@@ -164,7 +164,7 @@ class ExplainableVisualizer:
     def run_lrp_visualization(self, model, images: torch.Tensor, 
                              image_ids: List[str], multi_view: bool) -> None:
         """Run LRP visualization if enabled"""
-        if not self.show_lrp or self.model_wrapper.model_type == 'onnx':
+        if not self.show_lrp:
             return
             
         visualize_lrp_maps(

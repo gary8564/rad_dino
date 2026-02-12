@@ -5,43 +5,21 @@ import pandas as pd
 import numpy as np
 import torch
 from torchvision import transforms
-import pydicom
-from pydicom.dataset import Dataset, FileDataset
-from pydicom.uid import generate_uid
+from PIL import Image
 import shutil
 
 from rad_dino.data.dataset import RadImageClassificationDataset
 
-def create_mock_dicom():
-    """Create a mock DICOM file with proper metadata and pixel data."""
-    # Create file meta info
-    file_meta = Dataset()
-    file_meta.MediaStorageSOPClassUID = generate_uid()
-    file_meta.MediaStorageSOPInstanceUID = generate_uid()
-    file_meta.ImplementationClassUID = generate_uid()
-    file_meta.TransferSyntaxUID = pydicom.uid.ImplicitVRLittleEndian
-    
-    # Create the dataset
-    ds = FileDataset(None, {}, file_meta=file_meta, preamble=b"\0" * 128)
-    
-    # Add required DICOM attributes
-    ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
-    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
-    ds.StudyInstanceUID = generate_uid()
-    ds.SeriesInstanceUID = generate_uid()
-    
-    # Create and add pixel data
-    pixel_array = np.random.randint(0, 255, (1024, 1024), dtype=np.uint8)
-    ds.Rows, ds.Columns = pixel_array.shape
-    ds.PhotometricInterpretation = "MONOCHROME2"
-    ds.SamplesPerPixel = 1
-    ds.BitsAllocated = 8
-    ds.BitsStored = 8
-    ds.HighBit = 7
-    ds.PixelRepresentation = 0
-    ds.PixelData = pixel_array.tobytes()
-    
-    return ds
+
+def create_mock_png(filepath: str):
+    """Create a mock PNG image file that SimpleITK can read."""
+    # Create a random grayscale image with variation (min != max for normalization)
+    pixel_array = np.random.randint(10, 245, (256, 256), dtype=np.uint8)
+    pixel_array[0, 0] = 0
+    pixel_array[0, 1] = 255
+    img = Image.fromarray(pixel_array, mode='L')
+    img.save(filepath)
+
 
 class TestRadImageClassificationDataset(unittest.TestCase):
     def setUp(self):
@@ -49,21 +27,19 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         self.root = tempfile.mkdtemp(dir="/tmp")
         os.makedirs(os.path.join(self.root, "images", "train"), exist_ok=True)
         
-        # Create mock DICOM files for single-view
+        # Create mock PNG files for single-view
         for i in range(5):
-            ds = create_mock_dicom()
-            ds.save_as(os.path.join(self.root, "images", "train", f"img{i}.dcm"))
+            create_mock_png(os.path.join(self.root, "images", "train", f"img{i}.png"))
         
         # Create multi-view directory structure
         os.makedirs(os.path.join(self.root, "images", "train", "study0"), exist_ok=True)
         os.makedirs(os.path.join(self.root, "images", "train", "study1"), exist_ok=True)
         
-        # Create mock DICOM files for multi-view (4 views per study)
-        view_files = ['L_CC.dcm', 'L_MLO.dcm', 'R_CC.dcm', 'R_MLO.dcm']
+        # Create mock PNG files for multi-view (4 views per study)
+        view_files = ['L_CC.png', 'L_MLO.png', 'R_CC.png', 'R_MLO.png']
         for study_id in ['study0', 'study1']:
             for view_file in view_files:
-                ds = create_mock_dicom()
-                ds.save_as(os.path.join(self.root, "images", "train", study_id, view_file))
+                create_mock_png(os.path.join(self.root, "images", "train", study_id, view_file))
         
         # Create binary classification data
         self.binary_train = pd.DataFrame({
@@ -107,7 +83,7 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         self.assertIsInstance(img, torch.Tensor)
         self.assertIsInstance(target, torch.Tensor)
         self.assertEqual(img.shape, (3, 518, 518))
-        self.assertEqual(target.shape, ())  # Scalar tensor for binary classification
+        self.assertEqual(target.shape, (1,))  # [1] for BCEWithLogitsLoss
         self.assertTrue(torch.all((target == 0) | (target == 1)))
 
         # Test multilabel classification
@@ -143,7 +119,6 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
         
         transform = transforms.Compose([
-            transforms.ToPILImage(),
             transforms.Grayscale(num_output_channels=3),
             transforms.Resize((224, 224)),
             transforms.ToTensor()
@@ -207,7 +182,6 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
         
         transform = transforms.Compose([
-            transforms.ToPILImage(),
             transforms.Grayscale(num_output_channels=3),
             transforms.Resize((224, 224)),
             transforms.ToTensor()
@@ -224,7 +198,6 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         self.binary_train.to_csv(os.path.join(self.root, "train_labels.csv"))
         
         transform = transforms.Compose([
-            transforms.ToPILImage(),
             transforms.Grayscale(num_output_channels=3),
             transforms.Resize((224, 224)),
             transforms.ToTensor()
@@ -251,7 +224,7 @@ class TestRadImageClassificationDataset(unittest.TestCase):
         self.multiview_train.to_csv(os.path.join(self.root, "train_labels.csv"))
     
         # Remove one view file to test error handling
-        os.remove(os.path.join(self.root, "images", "train", "study0", "L_CC.dcm"))
+        os.remove(os.path.join(self.root, "images", "train", "study0", "L_CC.png"))
     
         dataset = RadImageClassificationDataset(
             self.root, split="train", task="multilabel", multi_view=True, model_name="rad-dino"
@@ -289,8 +262,8 @@ class TestRadImageClassificationDataset(unittest.TestCase):
             self.assertIsInstance(img, torch.Tensor)
             self.assertIsInstance(target, torch.Tensor)
             self.assertEqual(img.shape, (3, 518, 518))
-            self.assertEqual(target.shape, ())  # Scalar tensor for binary classification
+            self.assertEqual(target.shape, (1,))  # [1] for BCEWithLogitsLoss
             self.assertIsInstance(img_id, str)
 
 if __name__ == "__main__":
-    unittest.main() 
+    unittest.main()

@@ -6,6 +6,7 @@ import logging
 from typing import Callable, Optional, List, Tuple
 import timm.models.swin_transformer as swin
 import timm
+from rad_dino.models.base import BaseClassifier
 from rad_dino.loggings.setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
@@ -392,276 +393,154 @@ class SwinTransformer(swin.SwinTransformer):
             return self.encoder_features
 
 
-class ArkClassifier(nn.Module):
+class ArkClassifier(BaseClassifier):
     """
-    Ark classifier that follows the same interface as DinoClassifier and MedSigClassifier.
+    Ark classifier built on a Swin Transformer backbone.
+
     Supports multi-view processing and various fusion strategies.
     """
-    def __init__(self, 
-                 backbone: SwinTransformer, 
-                 num_classes: int, 
-                 multi_view: bool = False,
-                 num_views: Optional[int] = None,
-                 view_fusion_type: Optional[str] = None,
-                 adapter_dim: Optional[int] = None,
-                 view_fusion_hidden_dim: Optional[int] = None,
-                 use_backbone_projector: bool = False):
+
+    def __init__(
+        self,
+        backbone: SwinTransformer,
+        num_classes: int,
+        multi_view: bool = False,
+        num_views: Optional[int] = None,
+        view_fusion_type: Optional[str] = None,
+        adapter_dim: Optional[int] = None,
+        view_fusion_hidden_dim: Optional[int] = None,
+        use_backbone_projector: bool = False,
+    ):
         """
-        Initialize the Ark classifier.
-        
         Args:
-            backbone: Pre-trained Ark Swin Transformer backbone
-            num_classes: Number of output classes for classification
-            multi_view: Whether to enable multi-view processing
-            num_views: Number of views to process (only used if multi_view=True)
-            view_fusion_type: Fusion strategy for multi-view processing (only used if multi_view=True)
-                - "mean": Simple average across views
-                - "weighted_mean": Learnable weighted average
-                - "mlp_adapter": MLP-based feature adaptation and fusion
-            adapter_dim: Hidden dimension for MLP adapters (only used if multi_view=True and fusion_type="mlp_adapter")
-            view_fusion_hidden_dim: Hidden dimension for fusion MLP (only used if multi_view=True and fusion_type="mlp_adapter")
-            use_backbone_projector: Whether to use the backbone projector. 
-                                    For linear probing, use the feature dimension from the backbone after projection.
-                                    For fine-tuning, use the feature dimension from the backbone before projection.
+            backbone: Pre-trained Ark Swin Transformer backbone.
+            num_classes: Number of output classes for classification.
+            multi_view: Whether to enable multi-view processing.
+            num_views: Number of views (required when multi_view=True).
+            view_fusion_type: Fusion strategy — ``"mean"``, ``"weighted_mean"``, or ``"mlp_adapter"``.
+            adapter_dim: Hidden dim for MLP adapters.
+            view_fusion_hidden_dim: Hidden dim for fusion MLP.
+            use_backbone_projector: If True, use backbone features after projection
+                (linear probing); otherwise use features before projection (fine-tuning).
         """
-        super().__init__()
-        self.backbone = backbone
-        self.num_classes = num_classes
-        self.multi_view = multi_view
         self.use_backbone_projector = use_backbone_projector
         if use_backbone_projector:
-            # For linear probing, use the feature dimension from the backbone after projection
-            self.embed_dim = backbone.num_features
+            embed_dim = backbone.num_features
         else:
-            # For fine-tuning, use the feature dimension from the backbone before projection
-            self.embed_dim = backbone.num_features if backbone.projector is None else backbone.projector.in_features
-        
-        # Initialize classification head 
-        self._init_classification_head()
-        
-        # Initialize multi-view components only if needed
-        if self.multi_view:
-            self._init_multi_view_components(num_views, view_fusion_type, adapter_dim, view_fusion_hidden_dim)
-        
-        # Initialize strategy function dictionaries for branch-free dispatch
-        self._init_strategy_dictionaries(view_fusion_type)
-        
-    def _init_multi_view_components(self, 
-                                    num_views: int, 
-                                    view_fusion_type: str | None, 
-                                    adapter_dim: int | None, 
-                                    view_fusion_hidden_dim: int | None):
-        """
-        Initialize multi-view components when multi_view=True.
-        Args:
-            num_views: Number of views to process
-            view_fusion_type: Type of fusion strategy to use
-            adapter_dim: Hidden dimension for MLP adapters
-            view_fusion_hidden_dim: Hidden dimension for fusion MLP
-        """
-        # Validate multi-view parameters
-        assert num_views is not None, "Number of views is required for multi-view processing"
-        assert view_fusion_type is not None, "View fusion type is required for multi-view processing"
-        assert view_fusion_type in ["mean", "weighted_mean", "mlp_adapter"], f"Invalid fusion type: {view_fusion_type}"
-        
-        # Set multi-view configuration
-        self.num_views = num_views
-        self.view_fusion_type = view_fusion_type
-        
-        # Set default dimensions if not provided
-        if adapter_dim is None:
-            adapter_dim = self.embed_dim
-        if view_fusion_hidden_dim is None:
-            view_fusion_hidden_dim = self.embed_dim
-            
-        # Initialize components based on fusion type
-        if view_fusion_type == "mlp_adapter":
-            # MLP adapters for each view
-            self.view_adapters = nn.ModuleList([
-                nn.Sequential(
-                    nn.Linear(self.embed_dim, adapter_dim),
-                    nn.ReLU(inplace=True),
-                    nn.Linear(adapter_dim, self.embed_dim),
-                ) for _ in range(num_views)
-            ])
-            
-            # Fusion layer for combining adapted features
-            self.view_fusion_layer = nn.Sequential(
-                nn.Linear(num_views * self.embed_dim, view_fusion_hidden_dim),
-                nn.ReLU(inplace=True),
-                nn.Linear(view_fusion_hidden_dim, self.embed_dim),
-                nn.ReLU(inplace=True),
+            embed_dim = (
+                backbone.num_features
+                if backbone.projector is None
+                else backbone.projector.in_features
             )
-            
-        elif view_fusion_type == "weighted_mean":
-            # Learnable weights for weighted mean fusion
-            self.view_scores = nn.Parameter(torch.zeros(num_views))
-            # Simple linear layer for weighted mean
-            self.view_fusion_layer = nn.Linear(self.embed_dim, self.embed_dim)
-    
-    def _init_classification_head(self):
-        """Initialize the classification head."""
-        self.classifier = nn.Linear(self.embed_dim, self.num_classes)
-    
-    def _init_strategy_dictionaries(self, view_fusion_type: str | None):
-        """Initialize strategy dictionaries for branch-free dispatch in the forward pass."""
-        # Input reshape strategies (multi_view -> strategy)
-        self.input_reshape_strategies = {
-            True: self._multi_view_input_reshape,
-            False: self._single_view_input_reshape
-        }
-        
-        # Attention reshape strategies (multi_view -> strategy)
-        self.attention_reshape_strategies = {
-            True: self._multi_view_attention_reshape,
-            False: self._single_view_attention_reshape
-        }
-        
-        # Normalization strategies (multi_view -> strategy)
-        self.normalization_strategies = {
-            True: self._multi_view_normalization,
-            False: self._single_view_normalization
-        }
-        
-        # View fusion strategies (view_fusion_type -> strategy)
-        self.view_fusion_strategies = {
-            "mean": self._mean_fusion,
-            "weighted_mean": self._weighted_mean_fusion,
-            "mlp_adapter": self._mlp_adapter_fusion
-        }
-    
-    def _single_view_input_reshape(self, x: torch.Tensor) -> tuple[torch.Tensor, int]:
-        """Reshape input for single view processing."""
-        batch_size = x.shape[0]
-        return x, batch_size
-    
-    def _multi_view_input_reshape(self, x: torch.Tensor) -> tuple[torch.Tensor, int]:
-        """Reshape input for multi-view processing."""
-        # Expected input shape: [batch_size, num_views, channels, height, width]
-        batch_size = x.shape[0]
-        num_views = x.shape[1]
-        
-        # Reshape to [batch_size * num_views, channels, height, width]
-        x = x.view(batch_size * num_views, *x.shape[2:])
-        return x, batch_size
-    
-    def _single_view_attention_reshape(self, attention_maps: List[torch.Tensor], batch_size: int, num_views: int) -> torch.Tensor:
-        """
-        Single view attention reshaping strategy.
-        
-        Args:
-            attention_maps: List of attention maps from all layers
-            batch_size: Batch size
-            num_views: Number of views (always 1 for single view)
-            
-        Returns:
-            List of attention maps (since they have different sizes)
-        """
-        # Return as list since attention maps have different sizes across layers
-        return attention_maps
-    
-    def _multi_view_attention_reshape(self, attention_maps: List[torch.Tensor], batch_size: int, num_views: int) -> torch.Tensor:
-        """
-        Multi-view attention reshaping strategy.
-        
-        Args:
-            attention_maps: List of attention maps from all layers
-            batch_size: Batch size
-            num_views: Number of views
-            
-        Returns:
-            List of reshaped attention maps
-        """
-        # Reshape each attention map to include views dimension
-        reshaped_maps = []
-        for attn_map in attention_maps:
-            # attn_map shape: [B*V, N_heads, N_seq, N_seq]
-            # Calculate the actual batch size from the attention map
-            total_batch_size = attn_map.shape[0]
-            actual_batch_size = total_batch_size // num_views
-            
-            # Reshape to [B, V, N_heads, N_seq, N_seq]
-            reshaped = attn_map.reshape(actual_batch_size, num_views, *attn_map.shape[1:])
-            reshaped_maps.append(reshaped)
-        return reshaped_maps
-    
-    def _single_view_normalization(self, features: torch.Tensor) -> torch.Tensor:
-        """Normalize features for single view processing."""
-        return features
-    
-    def _multi_view_normalization(self, features: torch.Tensor) -> torch.Tensor:
-        """Normalize features for multi-view processing."""
-        # Reshape back to [batch_size, num_views, embed_dim]
-        batch_size = features.shape[0] // self.num_views
-        features = features.view(batch_size, self.num_views, -1)
-        return features
-    
-    def _single_view_fusion(self, features: torch.Tensor, batch_size: int, num_views: int) -> torch.Tensor:
-        """Fusion strategy for single view processing."""
-        return features
-    
-    def _mean_fusion(self, features: torch.Tensor, batch_size: int, num_views: int) -> torch.Tensor:
-        """Mean fusion across views."""
-        # features shape: [batch_size, num_views, embed_dim]
-        return torch.mean(features, dim=1)  # [batch_size, embed_dim]
-    
-    def _weighted_mean_fusion(self, features: torch.Tensor, batch_size: int, num_views: int) -> torch.Tensor:
-        """Weighted mean fusion across views."""
-        # features shape: [batch_size, num_views, embed_dim]
-        # Apply learnable weights
-        weights = F.softmax(self.view_scores, dim=0)  # [num_views]
-        weighted_features = features * weights.unsqueeze(0).unsqueeze(-1)  # [batch_size, num_views, embed_dim]
-        fused_features = torch.sum(weighted_features, dim=1)  # [batch_size, embed_dim]
-        return self.view_fusion_layer(fused_features)
-    
-    def _mlp_adapter_fusion(self, features: torch.Tensor, batch_size: int, num_views: int) -> torch.Tensor:
-        """MLP adapter fusion across views."""
-        # features shape: [batch_size, num_views, embed_dim]
-        adapted_features = []
-        for i in range(num_views):
-            adapted = self.view_adapters[i](features[:, i, :])  # [batch_size, embed_dim]
-            adapted_features.append(adapted)
-        
-        # Concatenate adapted features
-        concatenated = torch.cat(adapted_features, dim=1)  # [batch_size, num_views * embed_dim]
-        fused_features = self.view_fusion_layer(concatenated)  # [batch_size, embed_dim]
-        return fused_features
-    
-    def forward(self, x):
+
+        super().__init__(
+            backbone=backbone,
+            embed_dim=embed_dim,
+            num_classes=num_classes,
+            multi_view=multi_view,
+            num_views=num_views,
+            view_fusion_type=view_fusion_type,
+            adapter_dim=adapter_dim,
+            view_fusion_hidden_dim=view_fusion_hidden_dim,
+        )
+
+    # ------------------------------------------------------------------
+    # Feature extraction
+    # ------------------------------------------------------------------
+
+    def extract_features(self, x: torch.Tensor):
+        """Extract features via ``backbone.generate_embeddings``."""
+        features, attention_maps = self.backbone.generate_embeddings(
+            x, after_proj=self.use_backbone_projector
+        )
+        return features, attention_maps
+
+    # ------------------------------------------------------------------
+    # Forward override — Ark has unique normalise-before-fusion flow
+    # and list-based attention maps per Swin stage.
+    # ------------------------------------------------------------------
+
+    def forward(self, x: torch.Tensor):
         """
         Forward pass through the Ark classifier.
-        
-        Args:
-            x: Input tensor of shape [batch_size, channels, height, width] for single view
-               or [batch_size, num_views, channels, height, width] for multi-view
-               
-        Returns:
-            tuple: (logits, attention_maps)
-                - logits: Classification logits [B, num_classes]
-                - attention_maps: Attention maps from all transformer layers
+
+        Ark's flow differs from the base:
+        1. Input reshape
+        2. Feature extraction
+        3. Normalise / reshape features (multi-view: ``[B*V, D]`` -> ``[B, V, D]``)
+        4. Fusion (receives ``[B, V, D]`` for multi-view)
+        5. Classification
+        6. Reshape attention maps
         """
-        # Reshape input
-        x, batch_size = self.input_reshape_strategies[self.multi_view](x)
-        
-        # Extract features from backbone with attention maps
-        features, attention_maps = self.backbone.generate_embeddings(x, after_proj=self.use_backbone_projector)
-        
-        # Normalize features
-        features = self.normalization_strategies[self.multi_view](features)
-        
-        # Apply fusion strategy
-        fusion_strategy = self.view_fusion_strategies.get(getattr(self, 'view_fusion_type', None), self._single_view_fusion)
-        features = fusion_strategy(features, batch_size, getattr(self, 'num_views', 1))
-        
-        # Apply classification head
+        batch_size = x.shape[0]
+
+        # Input reshape
+        x_reshaped, _ = self.input_reshape_strategies[self.multi_view](x)
+
+        # Extract features
+        features, attention_maps = self.extract_features(x_reshaped)
+
+        # Normalise / reshape
+        if self.multi_view:
+            features = features.view(batch_size, self.num_views, -1)
+
+        # Fusion
+        fusion_strategy = self.view_fusion_strategies.get(
+            getattr(self, "view_fusion_type", None), self._single_view_fusion
+        )
+        features = fusion_strategy(
+            features, batch_size, getattr(self, "num_views", 1)
+        )
+
+        # Classification
         logits = self.classifier(features)
-        
-        # Reshape attention maps
-        num_views = getattr(self, 'num_views', 1)
-        if attention_maps is not None:
-            attention_maps = self.attention_reshape_strategies[self.multi_view](attention_maps, batch_size, num_views)
+
+        # Reshape attention maps for multi-view
+        num_views = getattr(self, "num_views", 1)
+        if attention_maps is not None and self.multi_view:
+            reshaped_maps = []
+            for attn_map in attention_maps:
+                total = attn_map.shape[0]
+                actual_bs = total // num_views
+                reshaped_maps.append(
+                    attn_map.reshape(actual_bs, num_views, *attn_map.shape[1:])
+                )
+            attention_maps = reshaped_maps
+
         return logits, attention_maps
-    
+
+    # ------------------------------------------------------------------
+    # Ark-specific fusion (operates on [B, V, D] input, not [B*V, D])
+    # ------------------------------------------------------------------
+
+    def _mean_fusion(
+        self, features: torch.Tensor, batch_size: int, num_views: int
+    ) -> torch.Tensor:
+        """Mean fusion across views. Input: ``[B, V, D]``."""
+        return torch.mean(features, dim=1)
+
+    def _weighted_mean_fusion(
+        self, features: torch.Tensor, batch_size: int, num_views: int
+    ) -> torch.Tensor:
+        """Weighted mean fusion across views. Input: ``[B, V, D]``."""
+        weights = F.softmax(self.view_scores, dim=0)
+        weighted = features * weights.unsqueeze(0).unsqueeze(-1)
+        return self.view_fusion_layer(torch.sum(weighted, dim=1))
+
+    def _mlp_adapter_fusion(
+        self, features: torch.Tensor, batch_size: int, num_views: int
+    ) -> torch.Tensor:
+        """MLP adapter fusion across views. Input: ``[B, V, D]``."""
+        adapted = []
+        for i in range(num_views):
+            adapted.append(self.view_adapters[i](features[:, i, :]))
+        concatenated = torch.cat(adapted, dim=1)
+        return self.view_fusion_layer(concatenated)
+
+    # ------------------------------------------------------------------
+    # Hierarchical attention helpers
+    # ------------------------------------------------------------------
+
     def get_hierarchical_attention_maps(self):
         """
         Get hierarchical attention maps organized by stages.

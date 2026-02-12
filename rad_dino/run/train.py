@@ -19,6 +19,7 @@ from rad_dino.models.dino import DinoClassifier
 from rad_dino.models.siglip import MedSigClassifier
 from rad_dino.models.ark import ArkClassifier, load_prtrained_ark_model
 from rad_dino.models.medimageinsight import MedImageInsightClassifier, load_medimageinsight_model
+from rad_dino.models.biomedclip import BiomedCLIPClassifier, load_biomedclip_model
 from rad_dino.loggings.setup import init_logging
 from rad_dino.train.trainer import Trainer
 
@@ -43,10 +44,10 @@ MODEL_REPOS = {
 }
 
 def get_args_parser(add_help: bool = True):
-    parser = argparse.ArgumentParser("DINOv2/DINOv3/MedSigLIP/ARK linear probling", add_help=add_help)
+    parser = argparse.ArgumentParser("DINOv2/DINOv3/MedSigLIP/ARK/BiomedCLIP linear probing", add_help=add_help)
     parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary'])
     parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray', 'NODE21'])
-    parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight']) 
+    parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
     parser.add_argument('--multi-view', action='store_true', help="Enable multi-view processing for mammography data")
     parser.add_argument(
@@ -117,6 +118,12 @@ def get_args_parser(add_help: bool = True):
         default=None,
         help="Optional only use a fraction (0-1) of the training set to study data efficiency."
     )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Compile the model with torch.compile (in-place) for faster training. "
+             "Checkpoints are fully compatible whether this flag is on or off.",
+    )
     return parser
 
 def setup(args, accelerator: Accelerator):
@@ -165,7 +172,19 @@ def setup(args, accelerator: Accelerator):
         num_classes = len(set(dataset.labels))  # Get number of classes from dataset
         
     # Model setup
-    if args.model == "medimageinsight":
+    if args.model == "biomedclip":
+        # BiomedCLIP uses open_clip, not HuggingFace AutoModel
+        backbone, _ = load_biomedclip_model(device=str(accelerator.device))
+        model = BiomedCLIPClassifier(
+            backbone,
+            num_classes=num_classes,
+            multi_view=args.multi_view,
+            num_views=multi_view_config.num_views if multi_view_config else None,
+            view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
+            adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
+            view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None,
+        )
+    elif args.model == "medimageinsight":
         # MedImageInsight uses a local clone of the lion-ai/MedImageInsights repository
         backbone = load_medimageinsight_model(
             model_dir=args.medimageinsight_path,
@@ -314,10 +333,6 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
     
     # Train and get best model
     best_model = trainer.train(fold_loaders, is_kfold, patience)
-    
-    # Export to ONNX if on main process
-    if accelerator.is_main_process:
-        trainer.export_onnx(best_model, args.model)
     
     return best_model
 

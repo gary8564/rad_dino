@@ -42,13 +42,15 @@ class TestSwinTransformer(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 3, self.img_size, self.img_size)
-        output = model(x)
+        output, attention_maps = model(x)
         
         # Should return a list of outputs for each task
         self.assertIsInstance(output, list)
         self.assertEqual(len(output), len(self.num_classes_list))
         for i, out in enumerate(output):
             self.assertEqual(out.shape, (self.batch_size, self.num_classes_list[i]))
+        # return_attention=False by default, so attention_maps should be None
+        self.assertIsNone(attention_maps)
         
     def test_swin_transformer_with_projector(self):
         """Test SwinTransformer with projector."""
@@ -65,11 +67,12 @@ class TestSwinTransformer(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 3, self.img_size, self.img_size)
-        output = model(x)
+        output, attention_maps = model(x)
         
         self.assertIsInstance(output, list)
         self.assertEqual(len(output), len(self.num_classes_list))
         self.assertEqual(model.num_features, 1376)
+        self.assertIsNone(attention_maps)
         
     def test_swin_transformer_single_head_forward(self):
         """Test SwinTransformer forward pass with specific head."""
@@ -84,10 +87,11 @@ class TestSwinTransformer(unittest.TestCase):
         )
         
         x = torch.randn(self.batch_size, 3, self.img_size, self.img_size)
-        features, logits = model(x, head_n=0)
+        # forward(x, head_n=0) returns (logits_for_head_0, attention_maps)
+        logits, attention_maps = model(x, head_n=0)
         
-        self.assertEqual(features.shape, (self.batch_size, model.num_features))
         self.assertEqual(logits.shape, (self.batch_size, self.num_classes_list[0]))
+        self.assertIsNone(attention_maps)
         
     def test_swin_transformer_generate_embeddings(self):
         """Test SwinTransformer generate_embeddings method."""

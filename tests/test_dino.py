@@ -1,7 +1,7 @@
 import unittest
 import torch
 import torch.nn as nn
-from unittest.mock import patch, MagicMock, Mock
+from unittest.mock import MagicMock, Mock
 from rad_dino.models.dino import DinoClassifier
 
 
@@ -63,7 +63,8 @@ class TestDinoClassifier(unittest.TestCase):
         model = DinoClassifier(
             backbone=self.mock_backbone,
             num_classes=self.num_classes,
-            multi_view=False
+            multi_view=False,
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 3, 224, 224)
@@ -96,7 +97,8 @@ class TestDinoClassifier(unittest.TestCase):
             num_classes=self.num_classes,
             multi_view=True,
             num_views=4,
-            view_fusion_type="mean"
+            view_fusion_type="mean",
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)
@@ -116,7 +118,8 @@ class TestDinoClassifier(unittest.TestCase):
                     num_classes=self.num_classes,
                     multi_view=True,
                     num_views=4,
-                    view_fusion_type=strategy
+                    view_fusion_type=strategy,
+                    return_attentions=True
                 )
                 
                 x = torch.randn(self.batch_size, 4, 3, 224, 224)
@@ -191,11 +194,10 @@ class TestDinoClassifier(unittest.TestCase):
             multi_view=False
         )
         
-        self.assertIsNotNone(model.head)
-        # Check that the head is a Sequential with the correct final layer
-        self.assertIsInstance(model.head, nn.Sequential)
-        self.assertIsInstance(model.head[-1], nn.Linear)
-        self.assertEqual(model.head[-1].out_features, self.num_classes)
+        self.assertIsNotNone(model.classifier)
+        self.assertIsInstance(model.classifier, nn.Linear)
+        self.assertEqual(model.classifier.in_features, self.embed_dim)
+        self.assertEqual(model.classifier.out_features, self.num_classes)
         
     def test_strategy_dictionaries(self):
         """Test that strategy dictionaries are properly initialized."""
@@ -209,7 +211,6 @@ class TestDinoClassifier(unittest.TestCase):
         self.assertIsNotNone(model.input_reshape_strategies)
         self.assertIsNotNone(model.view_fusion_strategies)
         self.assertIsNotNone(model.normalization_strategies)
-        self.assertIsNotNone(model.attention_reshape_strategies)
         
         self.assertTrue(callable(model.input_reshape_strategies[False]))
         self.assertTrue(callable(model.input_reshape_strategies[True]))
@@ -219,7 +220,8 @@ class TestDinoClassifier(unittest.TestCase):
         model = DinoClassifier(
             backbone=self.mock_backbone,
             num_classes=self.num_classes,
-            multi_view=False
+            multi_view=False,
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 3, 224, 224)
@@ -237,7 +239,8 @@ class TestDinoClassifier(unittest.TestCase):
             num_classes=self.num_classes,
             multi_view=True,
             num_views=4,
-            view_fusion_type="mean"
+            view_fusion_type="mean",
+            return_attentions=True
         )
         
         x = torch.randn(self.batch_size, 4, 3, 224, 224)

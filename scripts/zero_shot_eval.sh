@@ -22,7 +22,7 @@ conda activate rad-dino
 ### Configuration
 TASK="binary"                       # choices: multilabel | multiclass | binary
 DATA="RSNA-Pneumonia"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
-MODEL="medimageinsight"                           # choices: medsiglip | ark | medimageinsight
+MODEL="medimageinsight"                           # choices: medsiglip | ark | medimageinsight | biomedclip
 OUTPUT_PATH="/hpcwork/rwth1833/zero_shot_experiments/"
 BATCH_SIZE=32                      # default is 16
 DEVICE="cuda"                      # choices: cuda | cpu
@@ -80,7 +80,16 @@ elif [[ "$MODEL" == "medimageinsight" ]]; then
     --device "$DEVICE" \
     --custom-text-prompts "$CUSTOM_TEXT_PROMPTS" \
     $EXTRA_ARGS
+elif [[ "$MODEL" == "biomedclip" ]]; then
+  python rad_dino/run/zero_shot_inference.py \
+    --task "$TASK" \
+    --data "$DATA" \
+    --model "$MODEL" \
+    --output-path "$OUTPUT_PATH" \
+    --batch-size "$BATCH_SIZE" \
+    --device "$DEVICE" \
+    --custom-text-prompts "$CUSTOM_TEXT_PROMPTS"
 else
-  echo "Unsupported MODEL: $MODEL (expected 'ark', 'medsiglip', or 'medimageinsight')" >&2
+  echo "Unsupported MODEL: $MODEL (expected 'ark', 'medsiglip', 'medimageinsight', or 'biomedclip')" >&2
   exit 1
 fi

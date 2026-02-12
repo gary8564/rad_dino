@@ -52,7 +52,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--data', type=str, required=True, 
                        choices=['VinDr-CXR', 'TAIX-Ray', 'RSNA-Pneumonia', 'VinDr-Mammo', 'NODE21'])
     parser.add_argument('--model', type=str, required=True, 
-                       choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight']) 
+                       choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--model-path', required=True, type=str)
     parser.add_argument('--medimageinsight-path', type=str, default=DEFAULT_MEDIMAGEINSIGHT_PATH,
                        help="Path to the cloned lion-ai/MedImageInsights repository (default: rad_dino/models/MedImageInsights/).")
@@ -71,6 +71,9 @@ def get_args_parser() -> argparse.ArgumentParser:
                        help="Which attention heads to save: 'mean', 'max', 'min' (default: 'mean')")
     parser.add_argument('--compute-rollout', action='store_true', 
                        help="Enable attention rollout computation in addition to raw attention maps")
+    parser.add_argument('--compile', action='store_true',
+                       help="Compile the model with torch.compile for faster inference. "
+                            "Checkpoints are compatible whether this flag is on or off.")
     return parser
 
 def validate_args(config: InferenceConfig) -> None:
@@ -175,14 +178,14 @@ def setup_model(config: InferenceConfig, repo: str, num_classes: int,
     """Setup model"""
     # Load model
     model_wrapper = load_model(config.model_path, config.model, repo, num_classes, accelerator, 
-                              config.show_gradcam, config.show_attention, config.show_lrp, config.multi_view,
+                              config.show_attention, config.multi_view,
                               medimageinsight_path=config.medimageinsight_path)
 
-    # Validate ONNX multi-view compatibility
-    if config.multi_view and model_wrapper.model_type == 'onnx':
-        onnx_input_shape = model_wrapper.session.get_inputs()[0].shape
-        if len(onnx_input_shape) != 5 or onnx_input_shape[1] != 4:
-            raise ValueError("Multi-view inference requested but ONNX model was exported for single-view. Please export the ONNX model with multi-view support.")
+    # In-place torch.compile: compiles the forward pass without
+    # changing the module structure or state_dict keys.
+    if config.compile:
+        logger.info("Compiling model with torch.compile (in-place, backend='inductor')")
+        model_wrapper.model.compile(backend="inductor")
     
     return model_wrapper
 
@@ -251,7 +254,7 @@ def run_inference(model_wrapper,
         if explainable_visualizer is not None:
             # GradCAM visualization (limited to MAX_GRADCAM_IMAGES)
             compute_gradcam = gradcam_count < MAX_GRADCAM_IMAGES and config.show_gradcam
-            if compute_gradcam and model_wrapper.model_type != 'onnx':
+            if compute_gradcam:
                 explainable_visualizer.run_gradcam_visualization(
                     model_wrapper.model, images, image_ids, class_labels
                 )
@@ -266,7 +269,7 @@ def run_inference(model_wrapper,
                 )
             
             # LRP visualization
-            if config.show_lrp and model_wrapper.model_type != 'onnx':
+            if config.show_lrp:
                 explainable_visualizer.run_lrp_visualization(
                     model_wrapper.model, images, image_ids, model_wrapper.multi_view
                 )
@@ -308,6 +311,7 @@ def main():
         batch_size=args.batch_size,
         multi_view=args.multi_view,
         optimize_compute=args.optimize_compute,
+        compile=args.compile,
         show_attention=args.show_attention,
         show_lrp=args.show_lrp,
         show_gradcam=args.show_gradcam,
@@ -323,9 +327,9 @@ def main():
     # Setup accelerator
     accelerator = Accelerator(mixed_precision="fp16" if config.optimize_compute else "no")
     
-    # Get model repository (medimageinsight uses local path, not HF repo)
-    if config.model == "medimageinsight":
-        repo = None  # No corresponding HF repo
+    # Get model repository (medimageinsight / biomedclip does not have corresponding HF repo for AutoModel/AutoImageProcessor)
+    if config.model in ("medimageinsight", "biomedclip"):
+        repo = None 
     elif config.model not in MODEL_REPOS:
         raise ValueError(f"Model {config.model} is not supported. Please choose from {list(MODEL_REPOS.keys())}.")
     else:

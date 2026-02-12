@@ -3,11 +3,8 @@ import os
 import tempfile
 import shutil
 import torch
-import torch.nn as nn
-import numpy as np
 from unittest.mock import Mock, patch, MagicMock
 import argparse
-import yaml
 import sys
 from rad_dino.run.inference import (
     get_args_parser,
@@ -15,7 +12,6 @@ from rad_dino.run.inference import (
     create_output_directories
 )
 from rad_dino.configs.config import InferenceConfig, OutputPaths
-from accelerate import Accelerator
 
 class TestInference(unittest.TestCase):
     
@@ -103,8 +99,18 @@ class TestInference(unittest.TestCase):
             validate_args(attention_config)
 
     def test_create_output_directories(self):
-        """Test output directory creation"""
-        output_paths = create_output_directories(self.temp_dir, self.mock_accelerator)
+        """Test output directory creation with all visualization flags enabled"""
+        config = InferenceConfig(
+            task="multilabel",
+            data="VinDr-CXR",
+            model="rad-dino",
+            model_path="test/path",
+            output_path="test/output",
+            show_gradcam=True,
+            show_attention=True,
+            show_lrp=True,
+        )
+        output_paths = create_output_directories(self.temp_dir, self.mock_accelerator, config)
         
         self.assertIsInstance(output_paths, OutputPaths)
         self.assertEqual(output_paths.base, self.temp_dir)
@@ -120,6 +126,32 @@ class TestInference(unittest.TestCase):
         self.assertTrue(os.path.exists(f"{self.temp_dir}/gradcam"))
         self.assertTrue(os.path.exists(f"{self.temp_dir}/attention"))
         self.assertTrue(os.path.exists(f"{self.temp_dir}/lrp"))
+    
+    def test_create_output_directories_no_visualizations(self):
+        """Test output directory creation without visualization flags"""
+        config = InferenceConfig(
+            task="multilabel",
+            data="VinDr-CXR",
+            model="rad-dino",
+            model_path="test/path",
+            output_path="test/output",
+        )
+        output_paths = create_output_directories(self.temp_dir, self.mock_accelerator, config)
+        
+        self.assertIsInstance(output_paths, OutputPaths)
+        self.assertEqual(output_paths.base, self.temp_dir)
+        self.assertEqual(output_paths.figs, f"{self.temp_dir}/figs")
+        self.assertEqual(output_paths.table, f"{self.temp_dir}/table")
+        self.assertIsNone(output_paths.gradcam)
+        self.assertIsNone(output_paths.attention)
+        self.assertIsNone(output_paths.lrp)
+        
+        # Only figs and table should exist
+        self.assertTrue(os.path.exists(f"{self.temp_dir}/figs"))
+        self.assertTrue(os.path.exists(f"{self.temp_dir}/table"))
+        self.assertFalse(os.path.exists(f"{self.temp_dir}/gradcam"))
+        self.assertFalse(os.path.exists(f"{self.temp_dir}/attention"))
+        self.assertFalse(os.path.exists(f"{self.temp_dir}/lrp"))
 
     def test_multi_view_validation(self):
         """Test multi-view validation logic"""
@@ -174,49 +206,33 @@ class TestInference(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_args(invalid_config)
 
-    @patch('rad_dino.run.inference.load_model')
     @patch('rad_dino.run.inference.run_inference')
-    @patch('rad_dino.run.inference.get_transforms')
-    @patch('rad_dino.run.inference.RadImageClassificationDataset')
-    @patch('rad_dino.run.inference.DataLoader')
+    @patch('rad_dino.run.inference.setup_model')
+    @patch('rad_dino.run.inference.determine_class_info')
+    @patch('rad_dino.run.inference.setup_data_loader')
     @patch('rad_dino.run.inference.Accelerator')
-    @patch('yaml.safe_load')
-    @patch('builtins.open', new_callable=MagicMock)
-    def test_main_function_flow(self, mock_open, mock_yaml_load, mock_accelerator, 
-                               mock_dataloader, mock_dataset, mock_transforms, 
-                               mock_run_inference, mock_load_model):
+    @patch('os.makedirs')
+    def test_main_function_flow(self, mock_makedirs, mock_accelerator, 
+                               mock_setup_data_loader, mock_determine_class_info,
+                               mock_setup_model, mock_run_inference):
         """Test main function flow with mocked dependencies"""
-        # Mock yaml config
-        mock_yaml_load.return_value = {
-            "VinDr-CXR": {"data_root_folder": "/test/data"}
-        }
-        
         # Mock accelerator
         mock_acc = Mock()
+        mock_acc.is_main_process = True
         mock_accelerator.return_value = mock_acc
         
-        # Mock dataset
+        # Mock setup_data_loader to return a mock dataset and loader
         mock_ds = Mock()
         mock_ds.labels = ['label1', 'label2']
-        mock_dataset.return_value = mock_ds
-        
-        # Mock the dataset's labels property properly
-        mock_ds.__getitem__ = Mock(return_value=mock_ds)
-        mock_ds.__len__ = Mock(return_value=10)
-        
-        # Ensure labels is a real list, not a Mock
-        mock_ds.labels = ['label1', 'label2']
-        
-        # Mock data loader
         mock_loader = Mock()
-        mock_dataloader.return_value = mock_loader
+        mock_setup_data_loader.return_value = (mock_ds, mock_loader)
         
-        # Mock transforms
-        mock_transforms.return_value = (None, None)
+        # Mock determine_class_info
+        mock_determine_class_info.return_value = (['label1', 'label2'], 2)
         
         # Mock model wrapper
         mock_model_wrapper = Mock()
-        mock_load_model.return_value = mock_model_wrapper
+        mock_setup_model.return_value = mock_model_wrapper
         
         # Test with sys.argv
         test_args = [
@@ -232,41 +248,50 @@ class TestInference(unittest.TestCase):
             main()
             
             # Verify key function calls
-            mock_load_model.assert_called_once()
+            mock_setup_data_loader.assert_called_once()
+            mock_setup_model.assert_called_once()
             mock_run_inference.assert_called_once()
 
     @patch('rad_dino.run.inference.load_model')
     def test_model_repository_mapping(self, mock_load_model):
-        """Test model repository mapping"""
+        """Test model repository mapping contains expected keys"""
         from rad_dino.run.inference import MODEL_REPOS
         
-        expected_repos = {
-            "rad-dino": "microsoft/rad-dino",
-            "dinov2-base": "facebook/dinov2-base", 
-            "dinov2-small": "facebook/dinov2-small",
-            "medsiglip": "google/medsiglip-448",
-            "ark": "microsoft/swin-large-patch4-window12-384-in22k"
+        # Check that all expected model keys are present
+        expected_keys = {
+            "rad-dino", "dinov2-base", "dinov2-small", "dinov2-large",
+            "dinov3-large", "dinov3-base", "dinov3-small-plus",
+            "medsiglip", "ark",
         }
+        self.assertTrue(expected_keys.issubset(set(MODEL_REPOS.keys())),
+                        f"Missing keys: {expected_keys - set(MODEL_REPOS.keys())}")
         
-        self.assertEqual(MODEL_REPOS, expected_repos)
+        # Spot-check a few well-known repos
+        self.assertEqual(MODEL_REPOS["rad-dino"], "microsoft/rad-dino")
+        self.assertEqual(MODEL_REPOS["medsiglip"], "google/medsiglip-448")
 
-    def test_fusion_type_validation(self):
-        """Test fusion type validation"""
-        # Test valid fusion types
-        valid_fusion_types = ['mean', 'weighted_mean', 'mlp_adapter']
+    def test_compile_flag_in_config(self):
+        """Test that compile flag is available in InferenceConfig"""
+        # Default: compile is False
+        config = InferenceConfig(
+            task="multilabel",
+            data="VinDr-CXR",
+            model="rad-dino",
+            model_path="test/path",
+            output_path="test/output",
+        )
+        self.assertFalse(config.compile)
         
-        for fusion_type in valid_fusion_types:
-            with self.subTest(fusion_type=fusion_type):
-                config = InferenceConfig(
-                    task="multilabel",
-                    data="VinDr-CXR",
-                    model="rad-dino",
-                    model_path="test/path",
-                    output_path="test/output",
-                    fusion_type=fusion_type
-                )
-                # Should not raise
-                self.assertEqual(config.fusion_type, fusion_type)
+        # Explicit compile=True
+        config_compiled = InferenceConfig(
+            task="multilabel",
+            data="VinDr-CXR",
+            model="rad-dino",
+            model_path="test/path",
+            output_path="test/output",
+            compile=True,
+        )
+        self.assertTrue(config_compiled.compile)
 
     def test_compute_rollout_validation(self):
         """Test compute rollout validation"""

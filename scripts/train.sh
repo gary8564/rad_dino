@@ -27,7 +27,7 @@ export CUDA_VISIBLE_DEVICES=0
 # Core experiment settings
 TASK="binary"             # e.g., multilabel | multiclass | binary
 DATA="RSNA-Pneumonia"     # e.g., VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray | NODE21
-MODEL="medimageinsight"   # e.g., rad-dino | dinov2-small | dinov2-base | dinov2-large | dinov3-small-plus | dinov3-base | dinov3-large | medsiglip | ark | medimageinsight
+MODEL="medimageinsight"   # e.g., rad-dino | dinov2-small | dinov2-base | dinov2-large | dinov3-small-plus | dinov3-base | dinov3-large | medsiglip | ark | medimageinsight | biomedclip
 
 # Optional: fraction of training split to use for data-efficiency runs (e.g., 0.10, 0.50). Leave empty for full data.
 # TRAIN_SUBSET_FRACTION="0.10"       

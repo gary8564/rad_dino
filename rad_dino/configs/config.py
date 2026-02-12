@@ -1,9 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 from dataclasses import dataclass
-import onnxruntime
 import torch
-from rad_dino.models.dino import DinoClassifier
+from rad_dino.models.base import BaseClassifier
 
 # ------------ multi-view config ------------
 class MultiViewConfig(BaseModel):
@@ -70,6 +69,7 @@ class InferenceConfig:
     batch_size: int = 16
     multi_view: bool = False
     optimize_compute: bool = False
+    compile: bool = False
     show_attention: bool = False
     show_lrp: bool = False
     show_gradcam: bool = False
@@ -81,11 +81,7 @@ class InferenceConfig:
 @dataclass
 class ModelWrapper:
     """Wrapper for model information"""
-    model_type: str  # 'onnx' or 'pytorch'
-    session: Optional[onnxruntime.InferenceSession] = None
-    model: Optional[DinoClassifier] = None
-    input_name: Optional[str] = None
-    output_names: Optional[List[str]] = None
+    model: Optional[BaseClassifier] = None
     config: Optional[Any] = None
     device: Optional[torch.device] = None
     multi_view: bool = False

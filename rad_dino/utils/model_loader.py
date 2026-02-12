@@ -1,5 +1,4 @@
 import os
-import onnxruntime
 import torch
 from transformers import AutoModel
 from typing import Tuple, Any
@@ -7,12 +6,49 @@ from rad_dino.models.dino import DinoClassifier
 from rad_dino.models.siglip import MedSigClassifier
 from rad_dino.models.ark import ArkClassifier, SwinTransformer
 from rad_dino.models.medimageinsight import MedImageInsightClassifier, load_medimageinsight_model
+from rad_dino.models.biomedclip import BiomedCLIPClassifier, load_biomedclip_model
 from rad_dino.configs.config import ModelWrapper
-from rad_dino.utils.extract_onnx_attentions import augment_onnx_add_attention_outputs
 from accelerate import Accelerator
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _migrate_state_dict_keys(state_dict: dict) -> dict:
+    """
+    Remap legacy state_dict keys produced by old classifier classes.
+
+    Old DinoClassifier / MedSigClassifier used:
+      - ``head.0.weight`` / ``head.0.bias``  (nn.Sequential wrapping nn.Linear)
+    New BaseClassifier-derived classes use:
+      - ``classifier.weight`` / ``classifier.bias``  (plain nn.Linear)
+
+    Old MedSigClassifier also used ``fusion_layer.*`` instead of ``view_fusion_layer.*``.
+
+    Additionally strips the ``_orig_mod.`` prefix that ``torch.compile()``
+     may add to state-dict keys, ensuring checkpoints saved from compiled models can be loaded.
+    """
+    migrated = {}
+    changed = False
+    for key, value in state_dict.items():
+        new_key = key
+        # Strip _orig_mod. prefix from torch.compile wrapper-style state dicts
+        if new_key.startswith("_orig_mod."):
+            new_key = new_key[len("_orig_mod."):]
+            changed = True
+        # head.0.weight -> classifier.weight
+        if new_key.startswith("head.0."):
+            new_key = new_key.replace("head.0.", "classifier.", 1)
+            changed = True
+        # fusion_layer.* -> view_fusion_layer.*
+        elif new_key.startswith("fusion_layer."):
+            new_key = new_key.replace("fusion_layer.", "view_fusion_layer.", 1)
+            changed = True
+        migrated[new_key] = value
+    if changed:
+        logger.info("Migrated legacy state_dict keys (head.0.* -> classifier.*, fusion_layer.* -> view_fusion_layer.*, _orig_mod.* -> *)")
+    return migrated
+
 
 def _load_best_dino_model(checkpoint_dir: str, 
                      backbone: AutoModel, 
@@ -38,7 +74,8 @@ def _load_best_dino_model(checkpoint_dir: str,
                            adapter_dim=adapter_dim,
                            view_fusion_hidden_dim=view_fusion_hidden_dim,
                            return_attentions=return_attentions)
-    model.load_state_dict(ckpt["model_state"])
+    state_dict = _migrate_state_dict_keys(ckpt["model_state"])
+    model.load_state_dict(state_dict)
     model = model.to(accelerator.device)
     return model
 
@@ -142,7 +179,8 @@ def _load_best_medsig_model(checkpoint_dir: str,
                            adapter_dim=adapter_dim,
                            view_fusion_hidden_dim=view_fusion_hidden_dim,
                            return_attentions=return_attentions)
-    model.load_state_dict(ckpt["model_state"])
+    state_dict = _migrate_state_dict_keys(ckpt["model_state"])
+    model.load_state_dict(state_dict)
     model = model.to(accelerator.device)
     return model
 
@@ -188,30 +226,45 @@ def _load_best_medimageinsight_model(checkpoint_dir: str,
     return model
 
 
-def _validate_onnx_shape(onnx_input_shape: Tuple, multi_view: bool, backbone_config: Any) -> None:
-    """Validate ONNX model input shape."""
-    if hasattr(backbone_config, "image_size"):
-        image_size = getattr(backbone_config, "image_size")
-    elif hasattr(backbone_config, "vision_config") and hasattr(backbone_config.vision_config, "image_size"):
-            image_size = getattr(backbone_config.vision_config, "image_size")
-    else:
-        raise ValueError(f"image_size not found in backbone config: {backbone_config}")
+def _load_best_biomedclip_model(checkpoint_dir: str,
+                                num_classes: int,
+                                accelerator: Accelerator,
+                                multi_view: bool = False) -> BiomedCLIPClassifier:
+    """Load BiomedCLIP PyTorch model from checkpoint.
 
+    Args:
+        checkpoint_dir: Directory containing ``best.pt`` checkpoint.
+        num_classes: Number of output classes.
+        accelerator: Accelerator instance.
+        multi_view: Whether multi-view was used during training.
 
-    if multi_view:
-        # For multi-view, expect [batch_size, 4, channels, height, width]
-        expected_shape = (None, 4, 3, image_size, image_size)
-        if len(onnx_input_shape) != 5 or onnx_input_shape[1] != 4:
-            raise ValueError(
-                f"ONNX model input shape {onnx_input_shape} doesn't match expected multi-view shape {expected_shape}"
-            )
-    else:
-        # For single-view, expect [batch_size, channels, height, width]
-        expected_shape = (None, 3, image_size, image_size)
-        if len(onnx_input_shape) != 4:
-            raise ValueError(
-                f"ONNX model input shape {onnx_input_shape} doesn't match expected single-view shape {expected_shape}"
-            )
+    Returns:
+        Loaded ``BiomedCLIPClassifier``.
+    """
+    ckpt = torch.load(os.path.join(checkpoint_dir, "best.pt"), map_location=accelerator.device)
+
+    # Get multi-view parameters from checkpoint
+    num_views = ckpt.get("num_views")
+    view_fusion_type = ckpt.get("view_fusion_type")
+    adapter_dim = ckpt.get("adapter_dim")
+    view_fusion_hidden_dim = ckpt.get("view_fusion_hidden_dim")
+
+    # Rebuild the open_clip backbone from HF hub
+    backbone, _ = load_biomedclip_model(device=str(accelerator.device))
+
+    model = BiomedCLIPClassifier(
+        backbone,
+        num_classes=num_classes,
+        multi_view=multi_view,
+        num_views=num_views,
+        view_fusion_type=view_fusion_type,
+        adapter_dim=adapter_dim,
+        view_fusion_hidden_dim=view_fusion_hidden_dim,
+    )
+    model.load_state_dict(ckpt["model_state"])
+    model = model.to(accelerator.device)
+    return model
+
 
 # Load pretrained backbone model
 def load_pretrained_model(model_repo):
@@ -230,86 +283,11 @@ def _build_backbone(model_name: str, model_repo: str) -> Tuple[Any, Any]:
     if model_name == "medimageinsight":
         mock_cfg = type('Config', (), {'image_size': 480})()
         return None, mock_cfg
+    if model_name == "biomedclip":
+        mock_cfg = type('Config', (), {'image_size': 224})()
+        return None, mock_cfg
     backbone = load_pretrained_model(model_repo)
     return backbone, backbone.config
-
-
-def _augment_onnx_for_attention(session: onnxruntime.InferenceSession,
-                                           onnx_model_path: str,
-                                           providers: list,
-                                           model_name: str,
-                                           show_attention: bool) -> Tuple[onnxruntime.InferenceSession, str, list[str]]:
-    """Augment a ONNX model to expose attention outputs. Returns (session, input_name, output_names)."""
-    input_name = session.get_inputs()[0].name
-    output_names = [o.name for o in session.get_outputs()]
-
-    if not show_attention:
-        return session, input_name, output_names
-
-    # Only DINO variants are supported for attention augmentation for now
-    if "dino" not in model_name:
-        raise NotImplementedError(
-            f"Attention visualization on ONNX is not supported for architecture '{model_name}'."
-        )
-
-    if len(output_names) >= 2:
-        # Already has attention outputs
-        return session, input_name, output_names
-
-    try:
-        augmented_path, new_outputs = augment_onnx_add_attention_outputs(onnx_model_path, None)
-        if new_outputs:
-            logger.info(
-                f"Augmented ONNX model to expose attention outputs. Added {len(new_outputs)} outputs."
-            )
-            session = onnxruntime.InferenceSession(augmented_path, providers=providers)
-            input_name = session.get_inputs()[0].name
-            output_names = [o.name for o in session.get_outputs()]
-    except Exception as e:
-        raise Exception(f"Extracting attention from ONNX model failed for {model_name}: {e}.")
-
-    return session, input_name, output_names
-
-
-def _load_onnx_model(checkpoint_dir: str,
-                     model_name: str,
-                     accelerator: Accelerator,
-                     backbone_config: Any,
-                     show_attention: bool,
-                     multi_view: bool) -> ModelWrapper:
-    """Load ONNX session and return a ModelWrapper. Attempts attention augmentation for DINO only."""
-    onnx_model_path = os.path.join(checkpoint_dir, "best.onnx")
-
-    providers = []
-    if accelerator.device.type == 'cuda':
-        providers.append('CUDAExecutionProvider')
-    providers.append('CPUExecutionProvider')
-
-    session = onnxruntime.InferenceSession(onnx_model_path, providers=providers)
-    session, input_name, output_names = _augment_onnx_for_attention(
-        session, onnx_model_path, providers, model_name, show_attention
-    )
-
-    current_providers = session.get_providers()
-    logger.info(f"Successfully loaded ONNX model from {onnx_model_path}")
-    logger.info(f"ONNX providers: {current_providers}")
-    logger.info(f"Input name: {input_name}")
-    logger.info(f"Output names: {output_names}")
-
-    # Validate ONNX model input shape
-    onnx_input_shape = session.get_inputs()[0].shape
-    logger.info(f"ONNX model input shape: {onnx_input_shape}")
-    _validate_onnx_shape(onnx_input_shape, multi_view, backbone_config)
-
-    return ModelWrapper(
-        model_type='onnx',
-        session=session,
-        input_name=input_name,
-        output_names=output_names,
-        config=backbone_config,
-        device=accelerator.device,
-        multi_view=multi_view
-    )
 
 
 def _load_pt_model(checkpoint_dir: str,
@@ -328,13 +306,14 @@ def _load_pt_model(checkpoint_dir: str,
         if medimageinsight_path is None:
             raise ValueError("medimageinsight_path is required to load MedImageInsight checkpoints.")
         model = _load_best_medimageinsight_model(checkpoint_dir, medimageinsight_path, num_classes, accelerator, multi_view)
+    elif model_name == "biomedclip":
+        model = _load_best_biomedclip_model(checkpoint_dir, num_classes, accelerator, multi_view)
     elif model_name == "medsiglip":
         model = _load_best_medsig_model(checkpoint_dir, backbone, num_classes, accelerator, multi_view, return_attentions=show_attention)
     else:  # dino models
         model = _load_best_dino_model(checkpoint_dir, backbone, num_classes, accelerator, multi_view, return_attentions=show_attention)
 
     return ModelWrapper(
-        model_type='pytorch',
         model=model,
         config=backbone_config,
         device=accelerator.device,
@@ -347,34 +326,16 @@ def load_model(checkpoint_dir: str,
                model_repo: str, 
                num_classes: int, 
                accelerator: Accelerator, 
-               show_gradcam: bool, 
                show_attention: bool,
-               show_lrp: bool, 
                multi_view: bool = False,
                medimageinsight_path: str = None) -> ModelWrapper:
-    """Load model (ONNX or PyTorch) based on availability and requirements."""
+    """Load model from checkpoint."""
     
     # Handle different architectures
     backbone, backbone_config = _build_backbone(model_name, model_repo)
     
-    onnx_model_path = os.path.join(checkpoint_dir, "best.onnx")
-    
-    # Use ONNX if available and no gradient-based visualization approaches are required
-    use_onnx_preferred = os.path.exists(onnx_model_path) and not (show_gradcam or show_lrp)
-    
-    # For MedSigLIP attention visualization we must use PyTorch to capture pooler weights
-    if model_name in ["medsiglip", "ark"] and show_attention:
-        use_onnx_preferred = False
-
-    # MedImageInsight has no ONNX export support
-    if model_name == "medimageinsight":
-        use_onnx_preferred = False
-        
-    if use_onnx_preferred:
-        return _load_onnx_model(checkpoint_dir, model_name, accelerator, backbone_config, show_attention, multi_view)
-    else:
-        # Use PyTorch model
-        return _load_pt_model(
-            checkpoint_dir, model_name, backbone, num_classes, accelerator, multi_view, backbone_config, show_attention,
-            medimageinsight_path=medimageinsight_path
-        )
+    return _load_pt_model(
+        checkpoint_dir, model_name, backbone, num_classes, accelerator,
+        multi_view, backbone_config, show_attention,
+        medimageinsight_path=medimageinsight_path
+    )

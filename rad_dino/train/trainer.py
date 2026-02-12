@@ -6,26 +6,14 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 import wandb
-from torch.amp import autocast, GradScaler
 from transformers import get_cosine_schedule_with_warmup
 from rad_dino.train.train_utils import EarlyStopping
 from rad_dino.utils.cross_validation import KFold
 from rad_dino.loggings.setup import init_logging
 from rad_dino.train.model_registry import get_model_info, get_layer_term
-
+from rad_dino.utils.model_loader import _migrate_state_dict_keys
 init_logging()
 logger = logging.getLogger(__name__)
-
-# Define model-specific input sizes
-MODEL_INPUT_SIZES = {
-    "rad-dino": (518, 518),  # RadDINO expects 518x518
-    "dinov2-base": (224, 224),     # DINOv2 expects 224x224
-    "dinov2-small": (224, 224),     # DINOv2 expects 224x224
-    "medsiglip": (448, 448),    # MedSigLIP expects 448x448
-    "ark": (768, 768),    # Ark expects 768x768
-    "medimageinsight": (480, 480)  # MedImageInsight expects 480x480
-}
-
 
 class Trainer:
     def __init__(self, model, criterion, eval_metrics, train_config, accelerator, checkpoint_dir, args):
@@ -302,6 +290,11 @@ class Trainer:
         # Create fresh model copy
         model = copy.deepcopy(base_model)
         
+        # In-place torch.compile
+        if getattr(self.args, "compile", False):
+            logger.info("Compiling model with torch.compile (in-place, backend='inductor')")
+            model.compile(backend="inductor")
+        
         # Apply initial unfreezing strategy
         self._apply_unfreezing_strategy(model, current_epoch=0)
         
@@ -354,7 +347,7 @@ class Trainer:
                 raise RuntimeError(f"No checkpoint found to resume. Expected a 'best.pt' at: {best_checkpoint}")
                 
             ckpt = torch.load(best_checkpoint, map_location=self.accelerator.device)
-            model.load_state_dict(ckpt["model_state"])
+            model.load_state_dict(_migrate_state_dict_keys(ckpt["model_state"]))
             optimizer.load_state_dict(ckpt["optimizer_state"])
             if lr_scheduler and ckpt.get("scheduler_state"):
                 lr_scheduler.load_state_dict(ckpt["scheduler_state"])
@@ -531,7 +524,9 @@ class Trainer:
             # Load best model for this fold on all ranks for consistency
             try:
                 ckpt = torch.load(kfold.best_checkpoint, map_location='cpu')
-                self.accelerator.unwrap_model(kfold.model).load_state_dict(ckpt["model_state"])
+                self.accelerator.unwrap_model(kfold.model).load_state_dict(
+                    _migrate_state_dict_keys(ckpt["model_state"])
+                )
                 best_model = kfold.model
                 if self.accelerator.is_main_process:
                     logger.info(f"{log_prefix}Loaded best model checkpoint with AUPRC={ckpt['best_metric']:.4f}")
@@ -576,70 +571,4 @@ class Trainer:
             if is_kfold:
                 logger.warning("No best model was found during cross-validation. Using the last-fold model.")
             best_model_global = best_model
-        return self.accelerator.unwrap_model(best_model_global) if best_model_global is not None else self.accelerator.unwrap_model(best_model)
-
-    def export_onnx(self, model, model_name):
-        """Export the model to ONNX format."""
-        try:
-            # Set the model to evaluation mode
-            model = model.to("cpu")
-            model.eval()
-            
-            # Get input size for the model
-            input_size = MODEL_INPUT_SIZES[model_name]
-            device = "cpu"
-            
-            # Check if model is multi-view and create appropriate dummy input
-            if hasattr(model, 'multi_view') and model.multi_view:
-                dummy_input = torch.randn(1, 4, 3, *input_size, device=device)  # [B, 4, C, H, W]
-                logger.info(f"Exporting ONNX model for multi-view with input shape: {dummy_input.shape}")
-            else:
-                dummy_input = torch.randn(1, 3, *input_size, device=device)  # [B, C, H, W]
-                logger.info(f"Exporting ONNX model for single-view with input shape: {dummy_input.shape}")
-                        
-            # Check if model supports attention maps
-            if hasattr(model, 'return_attentions'):
-                # DINO and MedSigLIP models
-                include_attentions = model.return_attentions
-            elif hasattr(model, 'backbone') and hasattr(model.backbone, 'return_attention'):
-                # Ark models
-                include_attentions = model.backbone.return_attention
-            else:
-                include_attentions = False
-            
-            # Build output configuration
-            if include_attentions:
-                output_names = ["logits", "all_attentions"]
-                dynamic_axes = {
-                    "pixel_values": {0: "batch_size"},   # batch dimension of input is dynamic
-                    "logits": {0: "batch_size"},         # batch dimension of output is dynamic
-                    "all_attentions": {1: "batch_size"}, # batch dimension of output is dynamic
-                }
-            else:
-                output_names = ["logits"]
-                dynamic_axes = {
-                    "pixel_values": {0: "batch_size"}, # batch dimension of input is dynamic
-                    "logits": {0: "batch_size"},       # batch dimension of output is dynamic
-                }
-            
-            logger.info(f"ONNX export configuration: {len(output_names)} outputs - {output_names}")
-            
-            # Export the model
-            onnx_path = os.path.join(self.checkpoint_dir, "best.onnx")
-            torch.onnx.export(
-                model,                        # model to be saved (on CPU, in eval mode)
-                dummy_input,                  # model input (a single tensor or a tuple of tensors, matching model's forward())
-                onnx_path,                    # where to save the model
-                export_params=True,           # store the trained parameter weights inside the model file
-                opset_version=17,             # the ONNX version to export the model to
-                do_constant_folding=True,     # whether to execute constant folding for optimization
-                input_names=["pixel_values"], # the model's input names
-                output_names=output_names,    # the model's output names
-                dynamic_axes=dynamic_axes,    # (Optional) allow dynamic batch sizes
-                verbose=True                  # Enable verbose mode for debugging
-            )
-            logger.info(f"Successfully exported the best model to onnx model at {onnx_path}!")
-            
-        except Exception as e:
-            logger.error(f"Failed to export ONNX model: {e}")
-            logger.info("The best model state dict is still available in the checkpoint directory as 'best.pt'") 
+        return self.accelerator.unwrap_model(best_model_global) if best_model_global is not None else self.accelerator.unwrap_model(best_model) 
