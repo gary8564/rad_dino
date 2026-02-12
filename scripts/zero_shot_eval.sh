@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=8G 
 #SBATCH --time=1:00:00                 
-#SBATCH --job-name=medsiglip_vindrmammo_zero_shot_eval_binary
-#SBATCH --output=stdout_medsiglip_vindrmammo_zero_shot_eval_binary.txt    
+#SBATCH --job-name=medimageinsight_rsnapneumonia_zero_shot_eval_binary
+#SBATCH --output=stdout_medimageinsight_rsnapneumonia_zero_shot_eval_binary.txt    
 #SBATCH --account=rwth1833              
 
 
@@ -21,8 +21,8 @@ conda activate rad-dino
 
 ### Configuration
 TASK="binary"                       # choices: multilabel | multiclass | binary
-DATA="VinDr-Mammo"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
-MODEL="medsiglip"                           # choices: medsiglip | ark
+DATA="RSNA-Pneumonia"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
+MODEL="medimageinsight"                           # choices: medsiglip | ark | medimageinsight
 OUTPUT_PATH="/hpcwork/rwth1833/zero_shot_experiments/"
 BATCH_SIZE=32                      # default is 16
 DEVICE="cuda"                      # choices: cuda | cpu
@@ -31,8 +31,11 @@ DEVICE="cuda"                      # choices: cuda | cpu
 # Ark: checkpoint path (file or directory that exists)
 ARK_CHECKPOINT_PATH="/hpcwork/rwth1833/models/ark/Ark+_Nature/Ark6_swinLarge768_ep50.pth.tar"
 
-# MedSigLIP: path to custom text prompts JSON (use absolute path)
+# MedSigLIP / MedImageInsight: path to custom text prompts JSON (use absolute path)
 CUSTOM_TEXT_PROMPTS="${HOME}/master_thesis/rad_dino/rad_dino/configs/text_prompts.json"
+
+# MedImageInsight: path to the cloned lion-ai/MedImageInsights repo
+# MEDIMAGEINSIGHT_PATH="/custom/path/to/MedImageInsights"
 
 # Optional: control whether or not to use RSNA task head (for Ark + RSNA-Pneumonia + binary)
 # Set to "TRUE" to enable, anything else disables.
@@ -63,7 +66,21 @@ elif [[ "$MODEL" == "medsiglip" ]]; then
     --batch-size "$BATCH_SIZE" \
     --device "$DEVICE" \
     --custom-text-prompts "$CUSTOM_TEXT_PROMPTS"
+elif [[ "$MODEL" == "medimageinsight" ]]; then
+  EXTRA_ARGS=""
+  if [[ -n "$MEDIMAGEINSIGHT_PATH" ]]; then
+    EXTRA_ARGS+=" --medimageinsight-path $MEDIMAGEINSIGHT_PATH"
+  fi
+  python rad_dino/run/zero_shot_inference.py \
+    --task "$TASK" \
+    --data "$DATA" \
+    --model "$MODEL" \
+    --output-path "$OUTPUT_PATH" \
+    --batch-size "$BATCH_SIZE" \
+    --device "$DEVICE" \
+    --custom-text-prompts "$CUSTOM_TEXT_PROMPTS" \
+    $EXTRA_ARGS
 else
-  echo "Unsupported MODEL: $MODEL (expected 'ark' or 'medsiglip')" >&2
+  echo "Unsupported MODEL: $MODEL (expected 'ark', 'medsiglip', or 'medimageinsight')" >&2
   exit 1
 fi
