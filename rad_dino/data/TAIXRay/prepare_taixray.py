@@ -3,6 +3,7 @@ import argparse
 import pandas as pd
 import logging
 from typing import Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from rad_dino.loggings.setup import init_logging
 from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
 init_logging()
@@ -86,8 +87,20 @@ def prepare_taixray(path_root: str, output_dir: str):
     logger.info(f"Saved test annotations with {len(df_test)} samples.")
     
     # 5) SYMLINK PNG IMAGES
+    def _create_symlink(src: str, dst: str):
+        """Create a symlink, replacing any existing one."""
+        if not os.path.exists(src):
+            logger.warning(f"Source image not found: {src}")
+            return
+        try:
+            os.symlink(src, dst)
+        except FileExistsError:
+            os.remove(dst)
+            os.symlink(src, dst)
+
     for split, df in [("train", df_train), ("val", df_val), ("test", df_test)]:
         src_folder = os.path.join(path_root, "data")
+        dst_folder = os.path.join(output_dir, "images", split)
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
         

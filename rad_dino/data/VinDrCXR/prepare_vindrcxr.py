@@ -3,6 +3,7 @@ import argparse
 import pandas as pd
 import logging
 from typing import Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from rad_dino.loggings.setup import init_logging
 from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
 init_logging()
@@ -15,7 +16,7 @@ def parse_args():
     parser.add_argument("--classes", nargs="+", default=None, help="Specify an integer k for top-k classes or a list of subset of class names.")
     return parser.parse_args()
 
-def filter_subset_annot_labels(label_path: str, annot_path: str, labels: Union[int, list[str]]):
+def filter_subset_annot_labels(label_path: str, annot_path: str, labels: Union[int, list[str]], output_dir: str = None):
     """
     A subset of class labels is selected, given the long-tailed distribution in the original dataset.
     
@@ -23,13 +24,14 @@ def filter_subset_annot_labels(label_path: str, annot_path: str, labels: Union[i
         label_path: Path to label csv file
         annot_path: Path to annotation csv file
         labels: the class labels to be filtered
+        output_dir: Directory to write filtered CSVs to. If None, writes next to the source files.
     Returns:
         A list of the class labels considered for image classification task
     
     """
     df_label = pd.read_csv(label_path, index_col="image_id")
     df_annot  = pd.read_csv(annot_path, index_col="image_id")
-    annot_dir = os.path.dirname(label_path)
+    out_dir = output_dir if output_dir else os.path.dirname(label_path)
     if isinstance(labels, int):
         # find top-k classes in the training dataset
         class_labels = (
@@ -48,11 +50,12 @@ def filter_subset_annot_labels(label_path: str, annot_path: str, labels: Union[i
     df_annot_filtered.reset_index(drop=True, inplace=True)
     
     # output the filtered csv 
-    label_out = os.path.join(annot_dir, "filtered_image_labels_train.csv")
-    annot_out = os.path.join(annot_dir, "filtered_annotations_train.csv")
+    os.makedirs(out_dir, exist_ok=True)
+    label_out = os.path.join(out_dir, "filtered_image_labels_train.csv")
+    annot_out = os.path.join(out_dir, "filtered_annotations_train.csv")
     df_label_filtered.to_csv(label_out, index=True)
     df_annot_filtered.to_csv(annot_out, index=True)
-    logger.debug(f"Filtered csv are saved!")
+    logger.debug(f"Filtered csv are saved to {out_dir}!")
     return class_labels, df_label_filtered
 
 def prepare_vindrcxr(path_root: str, output_dir: str, class_labels: Union[int, str, list[str], None]):
@@ -65,16 +68,16 @@ def prepare_vindrcxr(path_root: str, output_dir: str, class_labels: Union[int, s
         df_train = pd.read_csv(train_labels_path, index_col="image_id")
         df_test = pd.read_csv(test_labels_path, index_col="image_id")
         labels = df_train.columns.tolist()
-        assert len(labels) == 15, f"The number of class labels must be 15 when `class_labels` is None."
+        assert len(labels) == 15, "The number of class labels must be 15 when `class_labels` is None."
     elif isinstance(class_labels, int):
-        labels, df_train = filter_subset_annot_labels(train_labels_path, train_annot_path, class_labels)
-        _, df_test = filter_subset_annot_labels(test_labels_path, test_annot_path, labels)
+        labels, df_train = filter_subset_annot_labels(train_labels_path, train_annot_path, class_labels, output_dir)
+        _, df_test = filter_subset_annot_labels(test_labels_path, test_annot_path, labels, output_dir)
     elif isinstance(class_labels, str):
-        labels, df_train = filter_subset_annot_labels(train_labels_path, train_annot_path, [class_labels])
-        _, df_test = filter_subset_annot_labels(test_labels_path, test_annot_path, labels)
+        labels, df_train = filter_subset_annot_labels(train_labels_path, train_annot_path, [class_labels], output_dir)
+        _, df_test = filter_subset_annot_labels(test_labels_path, test_annot_path, labels, output_dir)
     else:
-        labels, df_train = filter_subset_annot_labels(train_labels_path, train_annot_path, class_labels)
-        _, df_test = filter_subset_annot_labels(test_labels_path, test_annot_path, labels)
+        labels, df_train = filter_subset_annot_labels(train_labels_path, train_annot_path, class_labels, output_dir)
+        _, df_test = filter_subset_annot_labels(test_labels_path, test_annot_path, labels, output_dir)
     
     # 2) AGGREGATE LABELS WITH MAJORITY VOTING AND BUILD MULTI-HOT ENCODING DATAFRAME FOR CLASSIFICATION 
     df_train_agg = df_train.groupby(level=0).agg(lambda x: 1 if (len(x.mode()) == 2) else pd.Series.mode(x)[0])
@@ -83,6 +86,14 @@ def prepare_vindrcxr(path_root: str, output_dir: str, class_labels: Union[int, s
     df_test_agg.to_csv(os.path.join(output_dir, "test_labels.csv"))
     
     # 3) SYMLINK .dicom FILES
+    def _create_symlink(src: str, dst: str):
+        """Create a symlink, replacing any existing one."""
+        try:
+            os.symlink(src, dst)
+        except FileExistsError:
+            os.remove(dst)
+            os.symlink(src, dst)
+
     for split, df in [("train", df_train_agg), ("test", df_test_agg)]:
         src_folder = os.path.join(path_root, split)
         dst_folder = os.path.join(output_dir, "images", split)

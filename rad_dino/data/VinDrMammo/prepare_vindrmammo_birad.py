@@ -5,6 +5,7 @@ import ast
 import logging
 import numpy as np
 from typing import Union, List, Dict, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from rad_dino.loggings.setup import init_logging
 from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
 init_logging()
@@ -81,6 +82,14 @@ def prepare_vindrmammo_birad(df: pd.DataFrame, split_name: str,
     
     return df_split_agg
 
+def _create_symlink(src: str, dst: str):
+    """Create a symlink, replacing any existing one."""
+    try:
+        os.symlink(src, dst)
+    except FileExistsError:
+        os.remove(dst)
+        os.symlink(src, dst)
+
 def create_multi_view_structure(df_agg: pd.DataFrame, output_dir: str, split: str, 
                                src_images_folder: str) -> None:
     """
@@ -151,12 +160,12 @@ def main():
         df_train_labels = df_train_agg[['label']].copy()
         df_test_labels = df_test_agg[['label']].copy()
     
-    df_train_labels.to_csv(os.path.join(args.output_dir, f"train_labels.csv"))
-    df_test_labels.to_csv(os.path.join(args.output_dir, f"test_labels.csv"))
+    df_train_labels.to_csv(os.path.join(args.output_dir, "train_labels.csv"))
+    df_test_labels.to_csv(os.path.join(args.output_dir, "test_labels.csv"))
     
     # 7) SAVE LABEL MAPPING
     mapping_df = pd.DataFrame(list(label_mapping.items()), columns=['label', 'index'])
-    mapping_df.to_csv(os.path.join(args.output_dir, f"label_mapping.csv"), index=False)
+    mapping_df.to_csv(os.path.join(args.output_dir, "label_mapping.csv"), index=False)
     
     # 8) SYMLINK IMAGE FILES
     src_images_folder = os.path.join(args.path_root, "images")
@@ -178,7 +187,7 @@ def main():
             create_symlinks_parallel(symlink_pairs, raise_on_missing=True)
             logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
     
-    logger.info(f"Preprocessing VinDr-Mammo BI-RADS complete!")
+    logger.info("Preprocessing VinDr-Mammo BI-RADS complete!")
     logger.info(f"Multi-view: {args.multi_view}")
     logger.info(f"Number of classes: {len(unique_values)}")
     logger.info(f"Classes: {unique_values}")

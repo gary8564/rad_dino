@@ -4,6 +4,7 @@ import pandas as pd
 import ast
 import logging
 from typing import Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from rad_dino.loggings.setup import init_logging
 from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
 init_logging()
@@ -123,6 +124,14 @@ def prepare_vindrmammo(df, split_name, class_labels, multi_view=False):
     
     return df_split_agg
 
+def _create_symlink(src: str, dst: str):
+    """Create a symlink, replacing any existing one."""
+    try:
+        os.symlink(src, dst)
+    except FileExistsError:
+        os.remove(dst)
+        os.symlink(src, dst)
+
 def create_multi_view_structure(df_agg, output_dir, split, src_images_folder):
     """
     Create multi-view structure by organizing images by study_id.
@@ -230,7 +239,7 @@ def main():
             create_symlinks_parallel(symlink_pairs, raise_on_missing=True)
             logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
     
-    logger.info(f"Preprocessing VinDr-Mammo complete!")
+    logger.info("Preprocessing VinDr-Mammo complete!")
     logger.info(f"Multi-view: {args.multi_view}")
     logger.info(f"Number of classes: {len(all_categories)}")
     logger.info(f"Classes: {all_categories}")

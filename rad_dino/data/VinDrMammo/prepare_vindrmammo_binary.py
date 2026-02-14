@@ -3,6 +3,7 @@ import argparse
 import pandas as pd
 import logging
 from typing import List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from rad_dino.loggings.setup import init_logging
 from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
@@ -54,6 +55,14 @@ def get_unique_values(df: pd.DataFrame, column: str) -> List[str]:
     values = [v for v in values if v != column and pd.notna(v)]
     return sorted(values)
 
+
+def _create_symlink(src: str, dst: str):
+    """Create a symlink, replacing any existing one."""
+    try:
+        os.symlink(src, dst)
+    except FileExistsError:
+        os.remove(dst)
+        os.symlink(src, dst)
 
 def create_multi_view_structure(df_agg: pd.DataFrame, output_dir: str, split: str, src_images_folder: str) -> None:
     dst_folder = os.path.join(output_dir, "images", split)

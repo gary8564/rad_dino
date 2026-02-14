@@ -16,8 +16,8 @@ conda activate rad-dino
 
 # Preprocess VinDr-CXR dataset
 python ./rad_dino/data/VinDrCXR/prepare_vindrcxr.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-CXR/1.0.0 \
-    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR \
+    --path-root /mnt/ocean_storage/data/VinDr-CXR/download/physionet.org/files/vindr-cxr/1.0.0/ \
+    --output-dir /mnt/ocean_storage/users/cchang/VinDr-CXR \
     --classes \
         "Lung Opacity" \
         "Cardiomegaly" \
@@ -31,26 +31,26 @@ python ./rad_dino/data/VinDrCXR/prepare_vindrcxr.py \
 # Preprocess RSNA-Pneumonia dataset
 python ./rad_dino/data/RSNAPneumonia/prepare_rsna_pneumonia.py \
     --path-root /hpcwork/rwth1833/datasets/RSNA-Pneumonia \
-    --output-dir /hpcwork/rwth1833/datasets/preprocessed/RSNA-Pneumonia \
+    --output-dir /mnt/ocean_storage/users/cchang/RSNA-Pneumonia \
     --test-size 0.2
 
 # Preprocess VinDr-Mammo dataset (Finding Categories)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_multilabel.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo \
-    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/findings/multi_view \
+    --path-root /mnt/ocean_storage/data/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
+    --output-dir /mnt/ocean_storage/users/cchang/VinDr-Mammo/findings/multi_view \
     --classes 7 \
     --multi-view
 
 # Preprocess VinDr-Mammo dataset (BI-RADS Classification)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_birad.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo \
-    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view \
+    --path-root /mnt/ocean_storage/data/VinDr-Mammo/download/1.0.0/ \
+    --output-dir /mnt/ocean_storage/users/cchang/VinDr-Mammo/birads/multi_view \
     --multi-view
 
 # Preprocess VinDr-Mammo dataset (Binary Classification)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_binary.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo \
-    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/binary/multi_view \
+    --path-root /mnt/ocean_storage/data/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
+    --output-dir /mnt/ocean_storage/users/cchang/VinDr-Mammo/binary/multi_view \
     --multi-view
 
 # Preprocess TAIX-Ray dataset

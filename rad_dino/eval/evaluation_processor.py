@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pandas as pd
 import torch
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from accelerate import Accelerator
 from rad_dino.utils.metrics.compute_metrics import compute_evaluation_metrics
 from rad_dino.configs.config import OutputPaths
@@ -51,19 +51,29 @@ class EvaluationProcessor:
         return self.class_labels 
     
     def add_batch_results(self, image_ids: List[str], targets: torch.Tensor, 
-                         logits: torch.Tensor) -> None:
-        """Add results from a single batch"""
-        # Process predictions
-        if self.task == "multiclass":
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
+                         logits: torch.Tensor,
+                         probs: Optional[torch.Tensor] = None) -> None:
+        """Add results from a single batch.
+        
+        Args:
+            image_ids: List of sample identifiers.
+            targets: Ground-truth label tensor.
+            logits: Raw logits from the model.  Ignored when ``probs`` is given.
+            probs: Pre-computed probabilities. 
+                   When provided, ``logits`` is ignored and these probabilities are stored directly.
+        """
+        if probs is not None:
+            probs_np = probs.cpu().numpy()
+        elif self.task == "multiclass":
+            probs_np = torch.softmax(logits, dim=1).cpu().numpy()
         else:
-            probs = torch.sigmoid(logits).cpu().numpy()
+            probs_np = torch.sigmoid(logits).cpu().numpy()
         
         trues = targets.cpu().numpy()
         
         self.all_ids.extend(image_ids)
         self.all_trues.append(trues)
-        self.all_preds_prob.append(probs)
+        self.all_preds_prob.append(probs_np)
     
     def process_and_save_results(self) -> Dict[str, Any]:
         """Process all results and save to files"""

@@ -359,3 +359,4 @@ stdout*
 
 # External model repos (cloned locally since weights are too large for version control)
 rad_dino/models/MedImageInsights/
+scripts/download_data

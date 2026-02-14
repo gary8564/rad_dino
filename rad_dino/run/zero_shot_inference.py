@@ -5,7 +5,7 @@ import logging
 import json
 from tqdm import tqdm
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoModel
@@ -62,36 +62,87 @@ class BaseVLMZeroShotClassifier(ABC):
         self,
         data_loader: DataLoader,
         evaluation_processor: EvaluationProcessor,
-        text_prompts: Optional[List[str]] = None,
+        text_prompts: Optional[Union[List[str], Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Run zero-shot inference over the full dataset.
 
-        For binary tasks, prompt of neg/pos class labels is needed (ordered negative-first, positive-last), 
-        the positive-class probability is then extracted via 
-        softmax -> inverse-sigmoid so that ``EvaluationProcessor`` recovers the correct probability via sigmoid.
+        For multilabel tasks with paired templates, 
+        ``text_prompts`` should be a dict with keys ``positive_template``, ``negative_template``, and ``class_names``. 
+        For each class the model computes softmax between the positive and negative prompt to obtain a calibrated probability.
+
+        For binary tasks, ``text_prompts`` should be a list of two prompts [negative, positive] (ordered negative-first, positive-last).  
+
+        For multiclass tasks, ``text_prompts`` should be a list of prompts per class. 
+        Then, ``EvaluationProcessor`` applies softmax across all classes to obtain the class probabilities.
         """
+        task = evaluation_processor.task
+        is_multilabel = task == "multilabel"
+        is_binary = task == "binary"
+
+        # Validate prompt format matches task type
+        if is_multilabel:
+            if not isinstance(text_prompts, dict):
+                raise ValueError(
+                    "Multilabel task requires text_prompts to be a dict with keys "
+                    "'positive_template', 'negative_template', and 'class_names'. "
+                    f"Got {type(text_prompts).__name__} instead."
+                )
+            for key in ("positive_template", "negative_template", "class_names"):
+                if key not in text_prompts:
+                    raise ValueError(
+                        f"Multilabel paired-template dict is missing required key '{key}'. "
+                        f"Available keys: {list(text_prompts.keys())}"
+                    )
+            class_names = text_prompts["class_names"]
+            pos_prompts = [text_prompts["positive_template"].format(c) for c in class_names]
+            neg_prompts = [text_prompts["negative_template"].format(c) for c in class_names]
+            # Concatenate so we call `predict` only once per batch
+            all_prompts = pos_prompts + neg_prompts   # length 2N
+            n_classes = len(class_names)
+            logger.info(
+                "Using paired-template zero-shot inference for multilabel task with %d class labels: %s",
+                n_classes, class_names,
+            )
+        if is_binary:
+            if not isinstance(text_prompts, list) or len(text_prompts) < 2:
+                raise ValueError(
+                    "Binary task requires text_prompts to be a list of at least 2 prompts "
+                    "[negative, positive]. "
+                    f"Got {type(text_prompts).__name__} with length {len(text_prompts) if isinstance(text_prompts, list) else 'N/A'}."
+                )
+
         for batch in tqdm(data_loader, desc="Zero-shot inference..."):
             images = batch["pixel_values"]
             labels = batch["labels"]
             image_ids = batch["sample_ids"]
 
-            logits = self.predict(images, text_prompts)
+            if is_multilabel:
+                # Compute similarities to all 2N prompts at once: [B, 2N]
+                logits_all = self.predict(images, all_prompts)
+                pos_logits = logits_all[:, :n_classes]   # [B, N]
+                neg_logits = logits_all[:, n_classes:]   # [B, N]
 
-            # Binary task: convert 2-class softmax → single sigmoid logit
-            if (
-                evaluation_processor.task == "binary"
-                and text_prompts is not None
-                and len(text_prompts) >= 2
-            ):
+                # Paired softmax per class softmax([neg, pos]) and extract P(positive)
+                paired = torch.stack([neg_logits, pos_logits], dim=-1)  # [B, N, 2]
+                probs = torch.softmax(paired, dim=-1)[:, :, 1]         # [B, N]
+
+                evaluation_processor.add_batch_results(
+                    image_ids, labels, logits=logits_all, probs=probs
+                )
+            elif is_binary:
+                logits = self.predict(images, text_prompts)
+
+                # Paired softmax over [negative, positive] prompts and extract P(positive)
                 probs = torch.softmax(logits, dim=1)
-                prob_pos = probs[:, -1]
-                eps = 1e-6
-                logits = torch.logit(
-                    torch.clamp(prob_pos, eps, 1 - eps)
-                ).unsqueeze(1)
-
-            evaluation_processor.add_batch_results(image_ids, labels, logits)
+                prob_pos = probs[:, -1].unsqueeze(1)  # [B, 1]
+                evaluation_processor.add_batch_results(
+                    image_ids, labels, logits=logits, probs=prob_pos
+                )
+            else:
+                # Multiclass: pass raw logits; EvaluationProcessor applies softmax
+                logits = self.predict(images, text_prompts)
+                evaluation_processor.add_batch_results(image_ids, labels, logits)
 
         metrics = evaluation_processor.process_and_save_results()
         return metrics
@@ -295,13 +346,14 @@ class ArkZeroShotClassifier:
                 # L1-normalize per-sample so probabilities sum to 1
                 prob_sum = agg_probs.sum(dim=1, keepdim=True)
                 prob_norm = agg_probs / torch.clamp(prob_sum, min=eps)
-                # Pass log-probs so that later in EvaluationProcessor, softmax yields the normalized probs as is.
-                agg_logits = torch.log(torch.clamp(prob_norm, min=eps))
+                evaluation_processor.add_batch_results(
+                    image_ids, labels, logits=torch.zeros_like(prob_norm), probs=prob_norm
+                )
             else:
-                # For binary/multilabel, convert probs back to logits so that later in EvaluationProcessor,
-                # add_batch_results() yields the averaged probs as is.
-                agg_logits = torch.logit(torch.clamp(agg_probs, eps, 1 - eps))
-            evaluation_processor.add_batch_results(image_ids, labels, agg_logits)
+                # Binary/multilabel: pass aggregated probs directly
+                evaluation_processor.add_batch_results(
+                    image_ids, labels, logits=torch.zeros_like(agg_probs), probs=agg_probs
+                )
 
         metrics = evaluation_processor.process_and_save_results()
         return metrics
@@ -375,9 +427,13 @@ def validate_args(args: argparse.Namespace) -> None:
             if args.data != "RSNA-Pneumonia" or args.task != "binary":
                 raise ValueError("--use-rsna-head requires --data RSNA-Pneumonia and --task binary.")
         
-def get_text_prompts(prompt_file: str, dataset: str, task: str) -> List[str]:
+def get_text_prompts(prompt_file: str, dataset: str, task: str) -> Union[List[str], Dict[str, Any]]:
     """
     Load custom text prompts from JSON file and extract prompts for the given dataset and task.
+    
+    For multilabel tasks with paired templates, returns a dict with keys:
+    ``positive_template``, ``negative_template``, ``class_names``.
+    For binary/multiclass tasks, returns a flat list of text prompts.
     
     Args:
         prompt_file: Path to JSON file containing prompts
@@ -385,7 +441,7 @@ def get_text_prompts(prompt_file: str, dataset: str, task: str) -> List[str]:
         task: Classification task type
         
     Returns:
-        List of text prompts
+        Dict (paired templates for multilabel) or List[str] (binary/multiclass)
     """
     with open(prompt_file, 'r') as f:
         prompts = json.load(f)
@@ -435,10 +491,7 @@ def main():
         classifier = MedSigLIPZeroShotClassifier(
             device=args.device
         )
-        # Load custom prompts if provided
         text_prompts = get_text_prompts(args.custom_text_prompts, args.data, args.task)
-        if len(text_prompts) == 0:
-            raise ValueError(f"No prompts available for dataset '{args.data}' and task '{args.task}'")
     
     elif args.model == "medimageinsight":
         # Initialize MedImageInsight zero-shot classifier
@@ -446,20 +499,14 @@ def main():
             model_dir=args.medimageinsight_path,
             device=args.device
         )
-        # Load custom prompts
         text_prompts = get_text_prompts(args.custom_text_prompts, args.data, args.task)
-        if len(text_prompts) == 0:
-            raise ValueError(f"No prompts available for dataset '{args.data}' and task '{args.task}'")
 
     elif args.model == "biomedclip":
         # Initialize BiomedCLIP zero-shot classifier
         classifier = BiomedCLIPZeroShotClassifier(
             device=args.device
         )
-        # Load custom prompts
         text_prompts = get_text_prompts(args.custom_text_prompts, args.data, args.task)
-        if len(text_prompts) == 0:
-            raise ValueError(f"No prompts available for dataset '{args.data}' and task '{args.task}'")
 
     else:
         raise ValueError(f"Model '{args.model}' is not supported for zero-shot inference")
@@ -507,6 +554,30 @@ def main():
         class_labels = class_labels_mapping(args.data, raw_class_labels)
     else:
         class_labels = dataset.labels
+
+    # Validate text prompts for VLM models
+    if args.model in ("medsiglip", "medimageinsight", "biomedclip"):
+        if isinstance(text_prompts, dict):
+            # Paired-template mode (multilabel): validate required keys and class count
+            for key in ("positive_template", "negative_template", "class_names"):
+                if key not in text_prompts:
+                    raise ValueError(
+                        f"Paired-template prompts for '{args.data}/{args.task}' missing required key '{key}'"
+                    )
+            n_prompts = len(text_prompts["class_names"])
+            n_labels = len(class_labels) if class_labels else 0
+            if n_prompts != n_labels:
+                raise ValueError(
+                    f"Number of class names in text prompts ({n_prompts}) does not match "
+                    f"number of dataset class labels ({n_labels}). "
+                    f"Prompt class names: {text_prompts['class_names']}, "
+                    f"Dataset labels: {class_labels}"
+                )
+        elif isinstance(text_prompts, list):
+            if len(text_prompts) == 0:
+                raise ValueError(f"No prompts available for dataset '{args.data}' and task '{args.task}'")
+        else:
+            raise ValueError(f"Unexpected text_prompts type: {type(text_prompts)}")
 
     # Initialize evaluation processor
     evaluation_processor = EvaluationProcessor(

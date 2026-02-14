@@ -1,15 +1,19 @@
 {
     "VinDr-CXR": {
-        "multilabel": [
-            "a chest x-ray image with cardiomegaly",
-            "a chest x-ray image with pleural effusion",
-            "a chest x-ray image with pulmonary fibrosis",
-            "a chest x-ray image with tuberculosis",
-            "a chest x-ray image with lung opacity",
-            "a chest x-ray image with pleural thickening",
-            "a chest x-ray image with aortic enlargement",
-            "a chest x-ray image with no finding"
-        ],
+        "multilabel": {
+            "positive_template": "a chest x-ray image with {}",
+            "negative_template": "a chest x-ray image without {}",
+            "class_names": [
+                "cardiomegaly",
+                "pleural effusion",
+                "pulmonary fibrosis",
+                "tuberculosis",
+                "lung opacity",
+                "pleural thickening",
+                "aortic enlargement",
+                "no finding"
+            ]
+        },
         "binary": [
             "a normal chest x-ray image",
             "an abnormal chest x-ray image"
@@ -35,14 +39,17 @@
         ]
     },
     "TAIX-Ray": {
-        "multilabel": [
-            "a chest x-ray image with cardiomegaly",
-            "a chest x-ray image with pleural effusion",
-            "a chest x-ray image with pulmonary congestion",
-            "a chest x-ray image with pulmonary opacities",
-            "a chest x-ray image with atelectasis",
-            "a chest x-ray image with no finding"
-        ], 
+        "multilabel": {
+            "positive_template": "a chest x-ray image with {}",
+            "negative_template": "a chest x-ray image without {}",
+            "class_names": [
+                "cardiomegaly",
+                "pleural effusion",
+                "pulmonary congestion",
+                "pulmonary opacities",
+                "atelectasis"
+            ]
+        },
         "binary": [
             "a normal chest x-ray image",
             "an abnormal chest x-ray image"
