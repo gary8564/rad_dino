@@ -75,14 +75,27 @@ def prepare_covid_cxr(path_root: str, output_dir: str):
             raise ValueError(f"Encountered unmapped labels in {split}: {unmapped}")
         df["label"] = df["label"].astype(int)
         
-        # 3) CHECK FOR DUPLICATE image_ids
-        duplicates = df[df.duplicated(subset="image_id", keep=False)]
-        if len(duplicates) > 0:
+        # 3) RESOLVE DUPLICATE image_ids via MAJORITY VOTE
+        duplicates = df.duplicated(subset="image_id", keep=False)
+        if duplicates.any():
+            num_duplicates = duplicates.sum()
+            duplicate_ids = df.loc[duplicates, "image_id"].nunique()
+            # Check if duplicates have conflicting labels
+            conflicting_labels = df.loc[duplicates].groupby("image_id")
+            num_conflicting = sum(1 for _, g in conflicting_labels if g["label"].nunique() > 1)
             logger.warning(
-                f"Found {len(duplicates)} duplicate image_ids in {split} split. "
-                f"Keeping first occurrence."
+                f"Found {num_duplicates} rows for {duplicate_ids} duplicate image_ids in {split} split "
+                f"({num_conflicting} with conflicting labels). Resolving by majority vote."
             )
-            df = df.drop_duplicates(subset="image_id", keep="first")
+            # Aggregate: majority vote for label, keep first patient_id and filename
+            df = (
+                df.groupby("image_id", as_index=False)
+                .agg({
+                    "patient_id": "first",
+                    "filename": "first",
+                    "label": lambda x: x.mode().iloc[0],
+                })
+            )
         
         # 4) SAVE THE LABEL CSV
         df_labels = df[["image_id", "patient_id", "label"]].copy()
