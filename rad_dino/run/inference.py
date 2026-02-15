@@ -50,7 +50,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--task', type=str, required=True, 
                        choices=['multilabel', 'multiclass', 'binary'])
     parser.add_argument('--data', type=str, required=True, 
-                       choices=['VinDr-CXR', 'TAIX-Ray', 'RSNA-Pneumonia', 'VinDr-Mammo', 'NODE21'])
+                       choices=['VinDr-CXR', 'TAIX-Ray', 'RSNA-Pneumonia', 'VinDr-Mammo', 'NODE21', 'COVID-CXR'])
     parser.add_argument('--model', type=str, required=True, 
                        choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--model-path', required=True, type=str)

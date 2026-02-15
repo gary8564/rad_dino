@@ -63,3 +63,8 @@ python ./rad_dino/data/Node21/preprocess_node21.py \
     --path-root /hpcwork/rwth1833/datasets/NODE21/cxr_images/proccessed_data \
     --output-dir /hpcwork/rwth1833/datasets/preprocessed/NODE21 \
     --test-size 0.2
+
+# Preprocess COVID-CXR dataset
+python ./rad_dino/data/covid_cxr/preprocess_covid_cxr.py \
+    --path-root /hpcwork/rwth1833/datasets/covid-cxr \
+    --output-dir /hpcwork/rwth1833/datasets/preprocessed/COVID-CXR

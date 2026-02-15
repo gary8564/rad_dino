@@ -21,7 +21,7 @@ conda activate rad-dino
 
 ### Configuration
 TASK="binary"                       # choices: multilabel | multiclass | binary
-DATA="RSNA-Pneumonia"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
+DATA="RSNA-Pneumonia"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray | COVID-CXR
 MODEL="medimageinsight"                           # choices: medsiglip | ark | medimageinsight | biomedclip
 OUTPUT_PATH="/hpcwork/rwth1833/zero_shot_experiments/"
 BATCH_SIZE=32                      # default is 16
