@@ -54,5 +54,25 @@
             "a normal chest x-ray image",
             "an abnormal chest x-ray image"
         ]
+    },
+    "VinDr-SpineXR": {
+        "multilabel": {
+            "positive_template": "a spine x-ray image with {}",
+            "negative_template": "a spine x-ray image without {}",
+            "class_names": [
+                "no finding",
+                "osteophytes",
+                "disc space narrowing",
+                "foraminal stenosis",
+                "other lesions",
+                "surgical implant",
+                "spondylolysthesis",
+                "vertebral collapse"
+            ]
+        },
+        "binary": [
+            "a normal spine x-ray image",
+            "an abnormal spine x-ray image"
+        ]
     }
 }
