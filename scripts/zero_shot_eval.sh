@@ -14,10 +14,10 @@ source "${HOME}/.bashrc"
 micromamba activate rad-dino
 
 ### Configuration
-TASK="multilabel"                       # choices: multilabel | multiclass | binary
-DATA="TAIX-Ray"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray
-MODEL="medsiglip"                           # choices: medsiglip | ark | medimageinsight | biomedclip
-OUTPUT_PATH="/mnt/ocean_storage/users/cchang/zero_shot_experiments/"
+TASK="binary"                       # choices: multilabel | multiclass | binary
+DATA="RSNA-Pneumonia"                       # choices: VinDr-CXR | RSNA-Pneumonia | VinDr-Mammo | TAIX-Ray | COVID-CXR
+MODEL="medimageinsight"                           # choices: medsiglip | ark | medimageinsight | biomedclip
+OUTPUT_PATH="/hpcwork/rwth1833/zero_shot_experiments/"
 BATCH_SIZE=32                      # default is 16
 DEVICE="cuda"                      # choices: cuda | cpu
 

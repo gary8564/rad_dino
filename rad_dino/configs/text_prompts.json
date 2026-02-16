@@ -55,6 +55,12 @@
             "an abnormal chest x-ray image"
         ]
     },
+    "COVID-CXR": {
+        "binary": [
+            "a chest x-ray image showing no signs of COVID-19",
+            "a chest x-ray image showing signs of COVID-19"
+        ]
+    },
     "VinDr-SpineXR": {
         "multilabel": {
             "positive_template": "a spine x-ray image with {}",

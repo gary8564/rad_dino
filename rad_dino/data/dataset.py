@@ -38,12 +38,27 @@ def load_image_from_path(img_path: str) -> Image.Image:
     # SimpleITK often wraps single-slice DICOMs as (1, H, W).
     # Squeeze singleton dimensions if any, then reject 3D volumes.
     img_array = np.squeeze(img_array)
-    if img_array.ndim > 2:
+    if img_array.ndim == 3 and img_array.shape[2] in (3, 4):
+        # RGB/RGBA PNG/JPEG: keep as-is (callers convert to RGB before transforms).
+        # Normalize per-channel to [0, 255].
+        img_min, img_max = img_array.min(), img_array.max()
+        if img_max - img_min > 0:
+            img_array = (img_array - img_min) / (img_max - img_min) * 255.0
+        else:
+            raise ValueError(
+                f"Image has constant pixel value {img_min} and cannot be normalized: '{img_path}'. "
+                "The file is likely corrupted."
+            )
+        img_array = img_array.astype(np.uint8)
+        mode = "RGB" if img_array.shape[2] == 3 else "RGBA"
+        return Image.fromarray(img_array, mode=mode)
+    elif img_array.ndim > 2:
         raise ValueError(
-            f"Expected a 2D image but got {img_array.ndim}D volume with shape {img_array.shape} "
+            f"Expected a 2D image but got {img_array.ndim}D array with shape {img_array.shape} "
             f"from '{img_path}'. This repository only supports 2D chest X-ray images."
         )
     
+    # Grayscale images
     # Normalize to [0, 255]
     img_min, img_max = img_array.min(), img_array.max()
     if img_max - img_min > 0:
