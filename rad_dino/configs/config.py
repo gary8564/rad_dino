@@ -73,6 +73,7 @@ class InferenceConfig:
     show_attention: bool = False
     show_lrp: bool = False
     show_gradcam: bool = False
+    show_feature_maps: bool = False
     attention_threshold: Optional[float] = None
     save_heads: Optional[str] = None
     compute_rollout: bool = False
@@ -95,3 +96,4 @@ class OutputPaths:
     gradcam: Optional[str] = None
     attention: Optional[str] = None
     lrp: Optional[str] = None
+    feature_maps: Optional[str] = None

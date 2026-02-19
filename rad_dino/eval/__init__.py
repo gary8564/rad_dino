@@ -1,3 +1,4 @@
 from .inference_engine import InferenceEngine
 from .explainable_visualizer import ExplainableVisualizer
 from .evaluation_processor import EvaluationProcessor
+from .feature_extractor import extract_features, knn_classify, build_backbone_model, setup_data_and_features, validate_args

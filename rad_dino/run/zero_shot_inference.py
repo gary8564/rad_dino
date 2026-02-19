@@ -386,7 +386,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--model', type=str, required=True, 
                        choices=['medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--data', type=str, required=True, 
-                       choices=['VinDr-CXR', 'RSNA-Pneumonia', 'TAIX-Ray', 'VinDr-Mammo', 'COVID-CXR'])
+                       choices=['TAIX-Ray', 'VinDr-Mammo', 'SIIM-ACR', 'TBX11', 'VinDr-PCXR'])
     parser.add_argument('--output-path', type=str, required=True,
                        help="Output directory for results")
     parser.add_argument('--batch-size', type=int, default=16,

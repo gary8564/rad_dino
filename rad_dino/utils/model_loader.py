@@ -188,7 +188,8 @@ def _load_best_medimageinsight_model(checkpoint_dir: str,
                                      medimageinsight_path: str,
                                      num_classes: int,
                                      accelerator: Accelerator,
-                                     multi_view: bool = False) -> MedImageInsightClassifier:
+                                     multi_view: bool = False,
+                                     return_attentions: bool = False) -> MedImageInsightClassifier:
     """Load MedImageInsight PyTorch model from checkpoint.
 
     Args:
@@ -199,7 +200,7 @@ def _load_best_medimageinsight_model(checkpoint_dir: str,
         multi_view: Whether multi-view was used during training.
 
     Returns:
-        Loaded ``MedImageInsightClassifier``.
+        MedImageInsightClassifier instance.
     """
     ckpt = torch.load(os.path.join(checkpoint_dir, "best.pt"), map_location=accelerator.device)
 
@@ -220,8 +221,9 @@ def _load_best_medimageinsight_model(checkpoint_dir: str,
         view_fusion_type=view_fusion_type,
         adapter_dim=adapter_dim,
         view_fusion_hidden_dim=view_fusion_hidden_dim,
+        return_attentions=return_attentions,
     )
-    model.load_state_dict(ckpt["model_state"])
+    model.load_state_dict(ckpt["model_state"], strict=False)
     model = model.to(accelerator.device)
     return model
 
@@ -229,7 +231,8 @@ def _load_best_medimageinsight_model(checkpoint_dir: str,
 def _load_best_biomedclip_model(checkpoint_dir: str,
                                 num_classes: int,
                                 accelerator: Accelerator,
-                                multi_view: bool = False) -> BiomedCLIPClassifier:
+                                multi_view: bool = False,
+                                return_attentions: bool = False) -> BiomedCLIPClassifier:
     """Load BiomedCLIP PyTorch model from checkpoint.
 
     Args:
@@ -237,6 +240,7 @@ def _load_best_biomedclip_model(checkpoint_dir: str,
         num_classes: Number of output classes.
         accelerator: Accelerator instance.
         multi_view: Whether multi-view was used during training.
+        return_attentions: Whether to enable attention capture.
 
     Returns:
         Loaded ``BiomedCLIPClassifier``.
@@ -260,8 +264,9 @@ def _load_best_biomedclip_model(checkpoint_dir: str,
         view_fusion_type=view_fusion_type,
         adapter_dim=adapter_dim,
         view_fusion_hidden_dim=view_fusion_hidden_dim,
+        return_attentions=return_attentions,
     )
-    model.load_state_dict(ckpt["model_state"])
+    model.load_state_dict(ckpt["model_state"], strict=False)
     model = model.to(accelerator.device)
     return model
 
@@ -284,7 +289,7 @@ def _build_backbone(model_name: str, model_repo: str) -> Tuple[Any, Any]:
         mock_cfg = type('Config', (), {'image_size': 480})()
         return None, mock_cfg
     if model_name == "biomedclip":
-        mock_cfg = type('Config', (), {'image_size': 224})()
+        mock_cfg = type('Config', (), {'image_size': 224, 'patch_size': 16})()
         return None, mock_cfg
     backbone = load_pretrained_model(model_repo)
     return backbone, backbone.config
@@ -305,9 +310,9 @@ def _load_pt_model(checkpoint_dir: str,
     elif model_name == "medimageinsight":
         if medimageinsight_path is None:
             raise ValueError("medimageinsight_path is required to load MedImageInsight checkpoints.")
-        model = _load_best_medimageinsight_model(checkpoint_dir, medimageinsight_path, num_classes, accelerator, multi_view)
+        model = _load_best_medimageinsight_model(checkpoint_dir, medimageinsight_path, num_classes, accelerator, multi_view, return_attentions=show_attention)
     elif model_name == "biomedclip":
-        model = _load_best_biomedclip_model(checkpoint_dir, num_classes, accelerator, multi_view)
+        model = _load_best_biomedclip_model(checkpoint_dir, num_classes, accelerator, multi_view, return_attentions=show_attention)
     elif model_name == "medsiglip":
         model = _load_best_medsig_model(checkpoint_dir, backbone, num_classes, accelerator, multi_view, return_attentions=show_attention)
     else:  # dino models

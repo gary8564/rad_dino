@@ -67,6 +67,24 @@ class UnfreezeMedImageInsightHandler(UnfreezeModelHandler):
 
     def get_layer_term(self) -> str:
         return 'stages'
+    
+
+class UnfreezeBiomedCLIPHandler(UnfreezeModelHandler):
+    """Handler for BiomedCLIP (open_clip ViT-B/16) models.
+
+    The backbone is an open_clip CLIP model whose visual encoder is a timm
+    VisionTransformer with 12 blocks at model.backbone.visual.trunk.blocks.
+    """
+
+    def get_model_info(self, model) -> Dict[str, Any]:
+        return {
+            'model_type': 'BiomedCLIP-ViT',
+            'total_layers': len(model.backbone.visual.trunk.blocks),
+            'layer_pattern': 'visual.trunk.blocks.{}'
+        }
+
+    def get_layer_term(self) -> str:
+        return 'vision_encoder_layers'
 
 
 class UnfreezeViTHandler(UnfreezeModelHandler):

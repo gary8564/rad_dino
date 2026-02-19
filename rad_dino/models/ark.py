@@ -55,12 +55,10 @@ class WindowAttention(swin.WindowAttention):
         # Store attention maps if requested
         if self.return_attention:
             self.attention_maps.append(attn.detach())
-            # Store metadata: (num_windows, window_size, window_size, num_heads)
-            num_windows = B_ // (self.window_size[0] * self.window_size[1])
-            window_size = self.window_size[0] * self.window_size[1]
+            # Store metadata
             self.attention_metadata.append({
-                'num_windows': num_windows,
-                'window_size': window_size,
+                'total_windows': B_, # B_ = batch_size * num_windows
+                'window_size': (self.window_size[0], self.window_size[1]),
                 'num_heads': self.num_heads,
                 'seq_len': N
             })
@@ -356,6 +354,58 @@ class SwinTransformer(swin.SwinTransformer):
         
         return last_stage_maps, last_stage_metadata
     
+    # Stage-wise feature map hooks
+    def _enable_feature_map_hooks(self):
+        """Register forward hooks on each Swin stage to capture output features."""
+        if not hasattr(self, '_feature_storage'):
+            self._feature_storage: dict = {}
+            self._feature_hook_handles: list = []
+        self._feature_storage.clear()
+        for h in self._feature_hook_handles:
+            h.remove()
+        self._feature_hook_handles.clear()
+
+        for stage_idx, stage in enumerate(self.layers):
+            input_resolution = stage.blocks[0].input_resolution  # (H, W)
+
+            def hook_fn(module, input, output, s_idx=stage_idx, res=input_resolution):
+                if output.ndim == 3:
+                    feat = output  # [B, L, C]
+                    L = feat.shape[1]
+                    H_in, W_in = res
+                    if L != H_in * W_in:
+                        # PatchMerging downsample halves each spatial dim
+                        res = (H_in // 2, W_in // 2)
+                elif output.ndim == 4:
+                    B, H, W, C = output.shape
+                    feat = output.view(B, H * W, C)
+                    res = (H, W)
+                else:
+                    return
+                self._feature_storage[s_idx] = {
+                    "features": feat.detach(),
+                    "spatial_size": res,
+                    "embed_dim": feat.shape[-1],
+                }
+
+            handle = stage.register_forward_hook(hook_fn)
+            self._feature_hook_handles.append(handle)
+
+        logger.debug("Registered feature capture hooks on %d Swin stages", len(self.layers))
+
+    def _disable_feature_map_hooks(self):
+        """Remove feature capture hooks."""
+        if hasattr(self, '_feature_hook_handles'):
+            for h in self._feature_hook_handles:
+                h.remove()
+            self._feature_hook_handles.clear()
+
+    def _collect_stage_features(self) -> Optional[dict]:
+        """Return captured stage features or None."""
+        if not hasattr(self, '_feature_storage') or not self._feature_storage:
+            return None
+        return dict(self._feature_storage)
+
     def generate_embeddings(self, x, after_proj: bool = True):
         """
         Generate embeddings for downstream tasks.
@@ -454,6 +504,21 @@ class ArkClassifier(BaseClassifier):
             x, after_proj=self.use_backbone_projector
         )
         return features, attention_maps
+
+    def extract_stage_feature_maps(self, x: torch.Tensor):
+        """
+        Run a forward pass with stage-wise feature capture hooks.
+
+        Returns:
+            ``{stage_idx: {"features": [B, N, C], "spatial_size": (H, W), "embed_dim": C}}``
+            or None if capture failed.
+        """
+        self.backbone._enable_feature_map_hooks()
+        with torch.no_grad():
+            self.backbone.forward_features(x)
+        stage_features = self.backbone._collect_stage_features()
+        self.backbone._disable_feature_map_hooks()
+        return stage_features
 
     # ------------------------------------------------------------------
     # Forward override — Ark has unique normalise-before-fusion flow
@@ -640,7 +705,6 @@ def load_prtrained_ark_model(checkpoint_path: str,
     return model
 
 if __name__ == "__main__":
-    import os
     
     def unfreeze_layers(model: ArkClassifier, num_unfreeze_layers: int):
         """

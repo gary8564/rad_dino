@@ -262,6 +262,75 @@ class TestMedImageInsightClassifier(unittest.TestCase):
         logits, _ = model(x)
         self.assertEqual(logits.shape, (self.batch_size, 1))
 
+    def test_return_attentions_warning(self):
+        """return_attentions=True should log a warning but not error."""
+        import logging
+        with self.assertLogs("rad_dino.models.medimageinsight", level=logging.WARNING) as cm:
+            model = MedImageInsightClassifier(
+                backbone=self.mock_backbone,
+                num_classes=self.num_classes,
+                multi_view=False,
+                return_attentions=True,
+            )
+        self.assertTrue(any("does not support attention" in msg for msg in cm.output))
+        x = torch.randn(1, 3, self.image_size, self.image_size)
+        _, attn = model(x)
+        self.assertIsNone(attn)
+
+    def test_extract_stage_feature_maps_no_image_encoder(self):
+        """extract_stage_feature_maps returns None when backbone lacks image_encoder."""
+        model = MedImageInsightClassifier(
+            backbone=self.mock_backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        x = torch.randn(1, 3, self.image_size, self.image_size)
+        result = model.extract_stage_feature_maps(x)
+        self.assertIsNone(result)
+
+    def test_extract_stage_feature_maps_with_mock_blocks(self):
+        """extract_stage_feature_maps captures features from mock blocks."""
+        # Build a backbone with image_encoder.blocks that returns (features, size)
+        mock_block = torch.nn.Linear(10, 10)
+        _original_forward = mock_block.forward
+
+        spatial_h, spatial_w = 4, 4
+        embed_dim = 10
+
+        def _block_forward(x):
+            B = x.shape[0]
+            feat = torch.randn(B, spatial_h * spatial_w, embed_dim)
+            return feat, (spatial_h, spatial_w)
+
+        mock_block.forward = _block_forward
+
+        backbone = MagicMock(spec=[])
+        backbone.image_projection = torch.randn(2048, self.embed_dim)
+
+        image_encoder = MagicMock()
+        image_encoder.blocks = [mock_block]
+        backbone.image_encoder = image_encoder
+
+        def _mock_encode(x, norm=True):
+            for block in backbone.image_encoder.blocks:
+                block(x)
+            return torch.randn(x.shape[0], self.embed_dim)
+
+        backbone.encode_image = _mock_encode
+
+        model = MedImageInsightClassifier(
+            backbone=backbone,
+            num_classes=self.num_classes,
+            multi_view=False,
+        )
+        x = torch.randn(1, 3, self.image_size, self.image_size)
+        result = model.extract_stage_feature_maps(x)
+
+        self.assertIsNotNone(result)
+        self.assertIn(0, result)
+        self.assertEqual(result[0]["features"].shape[-1], embed_dim)
+        self.assertEqual(result[0]["spatial_size"], (spatial_h, spatial_w))
+
 
 class TestMedImageInsight(unittest.TestCase):
     """

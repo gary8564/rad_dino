@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from typing import Dict, List, Tuple, Optional, Union
 from skimage.io import imread
-from rad_dino.utils.visualization.visualize_vit_attention import _display_instances
+from rad_dino.utils.visualization.visualize_vit_attention import _display_instances, smooth_attention_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -494,6 +494,7 @@ def _process_swin_attentions_per_image(
     original_image = imread(os.path.join(image_output_dir, "original.png"))
     if original_image.shape[2] == 4:  # Remove alpha channel if present
         original_image = original_image[:, :, :3]
+    original_image_float = original_image.astype(np.float32) / 255.0
     
     # Determine which heads/maps to save based on head_fusion
     if head_fusion == "max":
@@ -554,6 +555,12 @@ def _process_swin_attentions_per_image(
             blur=False,
             figsize=(8, 8)
         )
+
+        # Smooth colormap overlay
+        overlay = smooth_attention_overlay(
+            original_image_float, attention_normalized.cpu().numpy(), cmap="jet", alpha=0.5)
+        overlay_fname = os.path.join(image_output_dir, f"overlay_{head_name}.png")
+        plt.imsave(fname=overlay_fname, arr=overlay, format='png', dpi=300)
     
     # Compute attention rollout if requested
     if compute_rollout:
@@ -593,6 +600,12 @@ def _process_swin_attentions_per_image(
             blur=False,
             figsize=(8, 8)
         )
+
+        # Smooth rollout overlay
+        rollout_overlay = smooth_attention_overlay(
+            original_image_float, rollout_resized.cpu().numpy(), cmap="jet", alpha=0.5)
+        rollout_overlay_fname = os.path.join(image_output_dir, f"rollout_overlay_{fused_for_rollout}.png")
+        plt.imsave(fname=rollout_overlay_fname, arr=rollout_overlay, format='png', dpi=300)
 
 def visualize_swin_attention_maps(
     hierarchical_attentions: Dict,

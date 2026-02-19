@@ -71,6 +71,9 @@ def get_args_parser() -> argparse.ArgumentParser:
                        help="Which attention heads to save: 'mean', 'max', 'min' (default: 'mean')")
     parser.add_argument('--compute-rollout', action='store_true', 
                        help="Enable attention rollout computation in addition to raw attention maps")
+    parser.add_argument('--show-feature-maps', action='store_true',
+                       help="Visualize stage-wise feature maps (DaViT paper Fig. 5 style). "
+                            "Supported for Ark (Swin) and MedImageInsight (DaViT).")
     parser.add_argument('--compile', action='store_true',
                        help="Compile the model with torch.compile for faster inference. "
                             "Checkpoints are compatible whether this flag is on or off.")
@@ -81,6 +84,29 @@ def validate_args(config: InferenceConfig) -> None:
     if config.multi_view and config.data != 'VinDr-Mammo':
         raise ValueError("Multi-view processing is only supported for VinDr-Mammo dataset")
     
+    # MedImageInsight (DaViT) does not support attention-based explainability
+    if config.model == "medimageinsight":
+        skipped = []
+        if config.show_attention:
+            skipped.append("--show-attention")
+            config.show_attention = False
+        if config.compute_rollout:
+            skipped.append("--compute-rollout")
+            config.compute_rollout = False
+        if config.show_gradcam:
+            skipped.append("--show-gradcam")
+            config.show_gradcam = False
+        if config.show_lrp:
+            skipped.append("--show-lrp")
+            config.show_lrp = False
+        if skipped:
+            logger.warning(
+                "MedImageInsight (DaViT) does not support %s due to its dual "
+                "attention mechanism. These flags will be ignored. "
+                "Use --show-feature-maps instead.",
+                ", ".join(skipped),
+            )
+
     if (config.save_heads is None or config.attention_threshold is None) and config.show_attention:
         raise ValueError("Attention visualization requires specifying save_heads and attention_threshold")
     
@@ -97,6 +123,7 @@ def create_output_directories(output_dir: str, accelerator: Accelerator, config:
         gradcam_path = None
         attention_path = None
         lrp_path = None
+        feature_maps_path = None
         
         if config.show_gradcam:
             os.makedirs(f"{output_dir}/gradcam", exist_ok=True)
@@ -109,6 +136,10 @@ def create_output_directories(output_dir: str, accelerator: Accelerator, config:
         if config.show_lrp:
             os.makedirs(f"{output_dir}/lrp", exist_ok=True)
             lrp_path = f"{output_dir}/lrp"
+
+        if config.show_feature_maps:
+            os.makedirs(f"{output_dir}/feature_maps", exist_ok=True)
+            feature_maps_path = f"{output_dir}/feature_maps"
     
     return OutputPaths(
         base=output_dir,
@@ -116,7 +147,8 @@ def create_output_directories(output_dir: str, accelerator: Accelerator, config:
         table=f"{output_dir}/table",
         gradcam=gradcam_path,
         attention=attention_path,
-        lrp=lrp_path
+        lrp=lrp_path,
+        feature_maps=feature_maps_path,
     )
 
 def determine_class_info(config: InferenceConfig, dataset: RadImageClassificationDataset) -> tuple[List, int]:
@@ -219,15 +251,19 @@ def run_inference(model_wrapper,
     # Initialize ExplainableVisualizer for visualization (only if any visualization flag is enabled)
     explainable_visualizer = None
     image_processor = None
-    if config.show_attention or config.show_gradcam or config.show_lrp:
-        if model_repo is None:
+    any_vis_enabled = config.show_attention or config.show_gradcam or config.show_lrp or config.show_feature_maps
+    if any_vis_enabled:
+        needs_image_proc = config.show_attention or config.show_gradcam or config.show_lrp
+        if model_repo is not None:
+            image_processor = AutoImageProcessor.from_pretrained(model_repo)
+        elif needs_image_proc:
             raise ValueError(
                 f"Explainability visualizations (attention/GradCAM/LRP) are not supported for model '{config.model}'."
             )
-        image_processor = AutoImageProcessor.from_pretrained(model_repo)
         explainable_visualizer = ExplainableVisualizer(
             accelerator, output_paths, model_wrapper, image_processor,
-            config.show_attention, config.show_gradcam, config.show_lrp
+            config.show_attention, config.show_gradcam, config.show_lrp,
+            config.show_feature_maps,
         )
     
     # Validate rollout computation
@@ -272,6 +308,12 @@ def run_inference(model_wrapper,
             if config.show_lrp:
                 explainable_visualizer.run_lrp_visualization(
                     model_wrapper.model, images, image_ids, model_wrapper.multi_view
+                )
+
+            # Feature map visualization
+            if config.show_feature_maps:
+                explainable_visualizer.run_feature_map_visualization(
+                    model_wrapper.model, images, image_ids
                 )
             
             # Clear CUDA cache after visualizations
@@ -318,6 +360,7 @@ def main():
         attention_threshold=args.attention_threshold,
         save_heads=args.save_heads,
         compute_rollout=args.compute_rollout,
+        show_feature_maps=args.show_feature_maps,
         medimageinsight_path=args.medimageinsight_path
     )
     

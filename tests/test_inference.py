@@ -109,6 +109,7 @@ class TestInference(unittest.TestCase):
             show_gradcam=True,
             show_attention=True,
             show_lrp=True,
+            show_feature_maps=True,
         )
         output_paths = create_output_directories(self.temp_dir, self.mock_accelerator, config)
         
@@ -119,6 +120,7 @@ class TestInference(unittest.TestCase):
         self.assertEqual(output_paths.gradcam, f"{self.temp_dir}/gradcam")
         self.assertEqual(output_paths.attention, f"{self.temp_dir}/attention")
         self.assertEqual(output_paths.lrp, f"{self.temp_dir}/lrp")
+        self.assertEqual(output_paths.feature_maps, f"{self.temp_dir}/feature_maps")
         
         # Check that directories were created
         self.assertTrue(os.path.exists(f"{self.temp_dir}/figs"))
@@ -126,6 +128,7 @@ class TestInference(unittest.TestCase):
         self.assertTrue(os.path.exists(f"{self.temp_dir}/gradcam"))
         self.assertTrue(os.path.exists(f"{self.temp_dir}/attention"))
         self.assertTrue(os.path.exists(f"{self.temp_dir}/lrp"))
+        self.assertTrue(os.path.exists(f"{self.temp_dir}/feature_maps"))
     
     def test_create_output_directories_no_visualizations(self):
         """Test output directory creation without visualization flags"""
@@ -145,6 +148,7 @@ class TestInference(unittest.TestCase):
         self.assertIsNone(output_paths.gradcam)
         self.assertIsNone(output_paths.attention)
         self.assertIsNone(output_paths.lrp)
+        self.assertIsNone(output_paths.feature_maps)
         
         # Only figs and table should exist
         self.assertTrue(os.path.exists(f"{self.temp_dir}/figs"))
@@ -152,6 +156,41 @@ class TestInference(unittest.TestCase):
         self.assertFalse(os.path.exists(f"{self.temp_dir}/gradcam"))
         self.assertFalse(os.path.exists(f"{self.temp_dir}/attention"))
         self.assertFalse(os.path.exists(f"{self.temp_dir}/lrp"))
+        self.assertFalse(os.path.exists(f"{self.temp_dir}/feature_maps"))
+
+    def test_medimageinsight_disables_attention_flags(self):
+        """Test that validate_args disables attention/gradcam/lrp for medimageinsight"""
+        config = InferenceConfig(
+            task="binary",
+            data="RSNA-Pneumonia",
+            model="medimageinsight",
+            model_path="test/path",
+            output_path="test/output",
+            show_attention=True,
+            attention_threshold=0.5,
+            save_heads="mean",
+            show_gradcam=True,
+            show_lrp=True,
+            compute_rollout=True,
+        )
+        validate_args(config)
+        self.assertFalse(config.show_attention)
+        self.assertFalse(config.show_gradcam)
+        self.assertFalse(config.show_lrp)
+        self.assertFalse(config.compute_rollout)
+
+    def test_medimageinsight_feature_maps_not_disabled(self):
+        """Test that validate_args preserves show_feature_maps for medimageinsight"""
+        config = InferenceConfig(
+            task="binary",
+            data="RSNA-Pneumonia",
+            model="medimageinsight",
+            model_path="test/path",
+            output_path="test/output",
+            show_feature_maps=True,
+        )
+        validate_args(config)
+        self.assertTrue(config.show_feature_maps)
 
     def test_multi_view_validation(self):
         """Test multi-view validation logic"""

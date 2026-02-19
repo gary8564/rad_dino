@@ -273,6 +273,64 @@ class TestArkClassifier(unittest.TestCase):
         self.assertEqual(output.shape, (self.batch_size, self.num_classes))
 
 
+class TestArkFeatureMapCapture(unittest.TestCase):
+    """Test the stage-wise feature map capture for Swin/Ark."""
+
+    def setUp(self):
+        self.num_classes_list = [2]
+        self.img_size = 224
+        self.batch_size = 1
+
+    def test_extract_stage_feature_maps_returns_dict(self):
+        """Feature map capture should return a dict with one entry per stage."""
+        backbone = SwinTransformer(
+            num_classes_list=self.num_classes_list,
+            img_size=self.img_size,
+            patch_size=4,
+            window_size=7,
+            embed_dim=96,
+            depths=(2, 2, 6, 2),
+            num_heads=(3, 6, 12, 24),
+        )
+        model = ArkClassifier(
+            backbone=backbone,
+            num_classes=2,
+            multi_view=False,
+        )
+        x = torch.randn(self.batch_size, 3, self.img_size, self.img_size)
+        result = model.extract_stage_feature_maps(x)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 4)
+        for stage_idx in range(4):
+            self.assertIn(stage_idx, result)
+            info = result[stage_idx]
+            H, W = info["spatial_size"]
+            N = info["features"].shape[1]
+            self.assertEqual(N, H * W,
+                             f"Stage {stage_idx}: feature count {N} != spatial {H}x{W}")
+
+    def test_hooks_are_cleaned_up(self):
+        """Hooks should be removed after extract_stage_feature_maps."""
+        backbone = SwinTransformer(
+            num_classes_list=self.num_classes_list,
+            img_size=self.img_size,
+            patch_size=4,
+            window_size=7,
+            embed_dim=96,
+            depths=(2, 2, 6, 2),
+            num_heads=(3, 6, 12, 24),
+        )
+        model = ArkClassifier(
+            backbone=backbone,
+            num_classes=2,
+            multi_view=False,
+        )
+        x = torch.randn(self.batch_size, 3, self.img_size, self.img_size)
+        model.extract_stage_feature_maps(x)
+        self.assertEqual(len(backbone._feature_hook_handles), 0)
+
+
 class TestLoadArkModel(unittest.TestCase):
     """Test the load_prtrained_ark_model function."""
     

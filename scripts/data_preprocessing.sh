@@ -36,21 +36,21 @@ python ./rad_dino/data/RSNAPneumonia/prepare_rsna_pneumonia.py \
 
 # Preprocess VinDr-Mammo dataset (Finding Categories)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_multilabel.py \
-    --path-root /mnt/ocean_storage/data/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
-    --output-dir /mnt/ocean_storage/users/cchang/VinDr-Mammo/findings/multi_view \
+    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/vindr-mammo-a-large-scale-benchmark-dataset-for-computer-aided-detection-and-diagnosis-in-full-field-digital-mammography-1.0.0 \
+    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/findings/multi_view \
     --classes 7 \
     --multi-view
 
 # Preprocess VinDr-Mammo dataset (BI-RADS Classification)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_birad.py \
-    --path-root /mnt/ocean_storage/data/VinDr-Mammo/download/1.0.0/ \
-    --output-dir /mnt/ocean_storage/users/cchang/VinDr-Mammo/birads/multi_view \
+    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/vindr-mammo-a-large-scale-benchmark-dataset-for-computer-aided-detection-and-diagnosis-in-full-field-digital-mammography-1.0.0 \
+    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view \
     --multi-view
 
 # Preprocess VinDr-Mammo dataset (Binary Classification)
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_binary.py \
-    --path-root /mnt/ocean_storage/data/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
-    --output-dir /mnt/ocean_storage/users/cchang/VinDr-Mammo/binary/multi_view \
+    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/vindr-mammo-a-large-scale-benchmark-dataset-for-computer-aided-detection-and-diagnosis-in-full-field-digital-mammography-1.0.0 \
+    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/binary/multi_view \
     --multi-view
 
 # Preprocess TAIX-Ray dataset

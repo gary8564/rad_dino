@@ -46,7 +46,7 @@ MODEL_REPOS = {
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv2/DINOv3/MedSigLIP/ARK/BiomedCLIP linear probing", add_help=add_help)
     parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary'])
-    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray', 'NODE21', 'COVID-CXR'])
+    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray', 'NODE21', 'COVID-CXR', 'VinDr-SpineXR', 'VinDr-PCXR', 'TBX11', 'SIIM-ACR'])
     parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
     parser.add_argument('--multi-view', action='store_true', help="Enable multi-view processing for mammography data")
@@ -183,6 +183,7 @@ def setup(args, accelerator: Accelerator):
             view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
             adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
             view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None,
+            return_attentions=args.return_output_attentions,
         )
     elif args.model == "medimageinsight":
         # MedImageInsight uses a local clone of the lion-ai/MedImageInsights repository
@@ -198,6 +199,7 @@ def setup(args, accelerator: Accelerator):
             view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
             adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
             view_fusion_hidden_dim=multi_view_config.view_fusion_hidden_dim if multi_view_config else None,
+            return_attentions=args.return_output_attentions,
         )
     elif args.model == "ark":
         ark_checkpoint_path = args.pretrained_ark_path

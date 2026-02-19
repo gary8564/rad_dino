@@ -22,6 +22,30 @@ def _apply_mask(image, mask, color, alpha=0.5):
         image[:, :, c] = image[:, :, c] * (1 - alpha * mask) + alpha * mask * color[c] * 255
     return image
 
+
+def smooth_attention_overlay(img_arr: np.ndarray,
+                             attention_map: np.ndarray,
+                             cmap: str = "jet",
+                             alpha: float = 0.5) -> np.ndarray:
+    """
+    Create a smooth colormap overlay of an attention map on an image.
+    Note: the attention map should already be resized to the image dimensions via bilinear interpolation before calling this function.
+
+    Args:
+        img_arr: RGB image [H, W, 3] in [0, 1].
+        attention_map: 2-D attention map [H, W] in [0, 1].
+        cmap: Matplotlib colormap name.
+        alpha: Blending factor (0 = image only, 1 = heatmap only).
+
+    Returns:
+        Blended image as uint8 array [H, W, 3].
+    """
+    colormap = plt.get_cmap(cmap)
+    heatmap = colormap(attention_map)[:, :, :3]  # drop alpha channel
+    blended = (1 - alpha) * img_arr + alpha * heatmap
+    blended = np.clip(blended, 0, 1)
+    return (blended * 255).astype(np.uint8)
+
 def _compute_attention_rollout(attentions, discard_ratio=0.9, head_fusion="mean"):
     """
     Compute attention rollout across all layers.
@@ -207,11 +231,16 @@ def _process_attentions_per_image(
         masked_attns[head] = masked_attns[head][sort_idx_inv[head]]
     masked_attns = masked_attns.reshape(num_heads, w_featmap, h_featmap).float()
     
-    # Interpolate
-    masked_attention_maps = nn.functional.interpolate(masked_attns.unsqueeze(0), scale_factor=patch_size, mode="nearest")[0].cpu().numpy()
+    # Interpolate with bilinear for smoother visualizations
+    target_size = (w_featmap * patch_size, h_featmap * patch_size)
+    masked_attention_maps = nn.functional.interpolate(
+        masked_attns.unsqueeze(0).float(), size=target_size, mode="bilinear", align_corners=False
+    )[0].cpu().numpy()
 
     attention_maps = attention_maps.reshape(num_heads, w_featmap, h_featmap)
-    attention_maps = nn.functional.interpolate(attention_maps.unsqueeze(0), scale_factor=patch_size, mode="nearest")[0].cpu()
+    attention_maps = nn.functional.interpolate(
+        attention_maps.unsqueeze(0).float(), size=target_size, mode="bilinear", align_corners=False
+    )[0].cpu()
     attention_maps = attention_maps.detach().numpy()
 
     # Save original image with proper denormalization
@@ -263,6 +292,9 @@ def _process_attentions_per_image(
     if original_image.shape[2] == 4:  # Remove alpha channel if present
         original_image = original_image[:, :, :3]
     
+    # Prepare normalised original image for smooth overlay
+    original_image_float = original_image.astype(np.float32) / 255.0
+
     # Save attention heatmaps for selected heads 
     for map_idx, head_idx in enumerate(heads_to_save):
         attention_map = selected_attention_maps[map_idx]
@@ -282,6 +314,12 @@ def _process_attentions_per_image(
             blur=False,
             figsize=(8, 8)
         )
+
+        # Smooth colormap overlay (paper-quality)
+        attn_norm = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min() + 1e-8)
+        overlay = smooth_attention_overlay(original_image_float, attn_norm, cmap="jet", alpha=0.5)
+        overlay_fname = os.path.join(image_output_dir, f"overlay_{head_name}.png")
+        plt.imsave(fname=overlay_fname, arr=overlay, format='png', dpi=300)
     
     # Compute attention rollout if requested
     if compute_rollout and all_layer_attentions is not None:
@@ -293,15 +331,16 @@ def _process_attentions_per_image(
             raise ValueError(f"NotEqualError: width of rollout_mask: {width}, width_featmap: {w_featmap}, height_featmap: {h_featmap}")
         rollout_spatial = rollout_mask.reshape(width, width).cpu().numpy()
         
-        # Interpolate to image size
+        # Interpolate to image size with bilinear for smoother output
         rollout_interpolated = nn.functional.interpolate(
-            torch.from_numpy(rollout_spatial).unsqueeze(0).unsqueeze(0), 
-            scale_factor=patch_size, 
-            mode="nearest"
+            torch.from_numpy(rollout_spatial).unsqueeze(0).unsqueeze(0).float(), 
+            size=target_size, 
+            mode="bilinear",
+            align_corners=False,
         )[0, 0].numpy()
         
         # Normalize to [0, 1] range
-        rollout_interpolated = rollout_interpolated / np.max(rollout_interpolated)
+        rollout_interpolated = (rollout_interpolated - rollout_interpolated.min()) / (rollout_interpolated.max() - rollout_interpolated.min() + 1e-8)
         
         # Save rollout visualization
         rollout_fname = os.path.join(image_output_dir, f"rollout_{head_fusion}.png")
@@ -309,7 +348,6 @@ def _process_attentions_per_image(
         
         # Create masked rollout visualization
         rollout_mask_fname = os.path.join(image_output_dir, f"rollout_masked_{head_fusion}.png")
-        # Apply threshold to rollout
         rollout_thresholded = np.where(rollout_interpolated > np.percentile(rollout_interpolated, (1-threshold)*100), rollout_interpolated, 0)
         
         _display_instances(
@@ -319,6 +357,11 @@ def _process_attentions_per_image(
             blur=False,
             figsize=(8, 8)
         )
+
+        # Smooth rollout overlay
+        rollout_overlay = smooth_attention_overlay(original_image_float, rollout_interpolated, cmap="jet", alpha=0.5)
+        rollout_overlay_fname = os.path.join(image_output_dir, f"rollout_overlay_{head_fusion}.png")
+        plt.imsave(fname=rollout_overlay_fname, arr=rollout_overlay, format='png', dpi=300)
 
 def visualize_attention_maps(
     attentions, 

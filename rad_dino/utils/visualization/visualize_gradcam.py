@@ -12,14 +12,14 @@ from rad_dino.loggings.setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
 
-def visualize_gradcam(model, input_tensor, target_layer, image_id, path_out, accelerator, image_mean, image_std, class_labels=None, threshold=0.5):
+def visualize_gradcam(model, input_tensor, target_layer, image_id, path_out, accelerator, image_mean, image_std, class_labels=None, threshold=0.5, has_cls_token=True):
     """
     Generate and save Grad-CAM heatmaps for positive labels.
     
     Args:
-        model: Trained DinoClassifier model
+        model: Trained classifier model
         input_tensor: Input image tensor [1, C, H, W] for single-view or [1, 4, C, H, W] for multi-view
-        target_layer: Layer for Grad-CAM (e.g., backbone.blocks[-1])
+        target_layer: Layer for Grad-CAM
         image_id: Image identifier
         path_out: Directory to save heatmaps
         accelerator: Accelerator instance
@@ -27,6 +27,7 @@ def visualize_gradcam(model, input_tensor, target_layer, image_id, path_out, acc
         image_std: Standard deviation values for image denormalization
         threshold: Probability threshold for positive labels
         class_labels: List of class names, only used for multilabel/multiclass classification
+        has_cls_token: Whether the model uses a CLS token (affects reshape transform)
     """
     if not accelerator.is_main_process:
         return
@@ -41,13 +42,15 @@ def visualize_gradcam(model, input_tensor, target_layer, image_id, path_out, acc
         logger.info(f"Generating multi-view GradCAM for {image_id}")
         _visualize_gradcam(
             model, input_tensor, target_layer, image_id, path_out, 
-            image_mean, image_std, class_labels, threshold, is_multi_view=True
+            image_mean, image_std, class_labels, threshold, is_multi_view=True,
+            has_cls_token=has_cls_token
         )
     else:
         logger.info(f"Generating single-view GradCAM for {image_id}")
         _visualize_gradcam(
             model, input_tensor, target_layer, image_id, path_out, 
-            image_mean, image_std, class_labels, threshold, is_multi_view=False
+            image_mean, image_std, class_labels, threshold, is_multi_view=False,
+            has_cls_token=has_cls_token
         )
 
 def _get_predictions_and_positive_label_indices(model, input_tensor, image_id, threshold=0.5):
@@ -98,12 +101,17 @@ def _denormalize_and_convert_to_PILImage(tensor, image_mean, image_std):
     return pil_img, np.array(pil_img) / 255.0
 
 def _get_single_view_reshape_transform(tensor):
-    """Single-view transformer tensor: [B, T, C] with T = 1 + H*W"""
-    # remove cls token
+    """Single-view transformer tensor: [B, T, C] with T = 1 + H * W (CLS token present)"""
     tensor = tensor[:, 1:, :]
     B, N, C = tensor.size()
     H = W = int(math.sqrt(N))
-    # reshape: [B, N, C] -> [B, C, H, W]
+    tensor = tensor.permute(0, 2, 1).reshape(B, C, H, W)
+    return tensor
+
+def _get_single_view_nocls_reshape_transform(tensor):
+    """Single-view transformer tensor without CLS token: [B, N, C] where N = H * W"""
+    B, N, C = tensor.size()
+    H = W = int(math.sqrt(N))
     tensor = tensor.permute(0, 2, 1).reshape(B, C, H, W)
     return tensor
 
@@ -112,25 +120,26 @@ def _get_multiview_reshape_transform(tensor):
     BV, T, C = tensor.shape
     V = 4
     B = BV // V
-    # remove CLS, reshape patch tokens
-    x = tensor[:, 1:, :].reshape(B, V, T-1, C)   # [B, 4, H*W, C]
+    x = tensor[:, 1:, :].reshape(B, V, T-1, C) # remove CLS, reshape patch tokens [B, 4, H*W, C]
     H = W = int(math.sqrt(T-1))
     x = x.permute(0, 1, 3, 2).reshape(B*V, C, H, W) # back to [B*V, C, H, W]
     return x
 
-def _get_reshape_transform(is_multi_view):
+def _get_reshape_transform(is_multi_view, has_cls_token=True):
     """Get appropriate reshape transform for single or multi-view."""
     if is_multi_view:
         return _get_multiview_reshape_transform
-    else:
+    elif has_cls_token:
         return _get_single_view_reshape_transform
+    else:
+        return _get_single_view_nocls_reshape_transform
 
 def _get_target_function(num_classes, class_idx):
     """Get appropriate target function based on classification type."""
     if num_classes == 1:
         # Binary classification: use BinaryClassifierOutputTarget
         # For binary classification, we want to explain the positive class (disease presence)
-        logger.info(f"Using BinaryClassifierOutputTarget(1) for binary classification")
+        logger.info("Using BinaryClassifierOutputTarget(1) for binary classification")
         return BinaryClassifierOutputTarget(1)  # 1 for positive class
     else:
         # Multi-class/multi-label: use ClassifierOutputTarget
@@ -150,7 +159,7 @@ def _save_predictions(pred_probs, image_id, path_out, class_labels):
             for i, prob in enumerate(pred_probs):
                 f.write(f"Class {i}: {prob:.4f}\n")
 
-def _visualize_gradcam(model, input_tensor, target_layer, image_id, path_out, image_mean, image_std, class_labels=None, threshold=0.5, is_multi_view=False):
+def _visualize_gradcam(model, input_tensor, target_layer, image_id, path_out, image_mean, image_std, class_labels=None, threshold=0.5, is_multi_view=False, has_cls_token=True):
     """GradCAM visualization for both single and multi-view inputs."""
     
     # Get predictions and target indices
@@ -159,7 +168,7 @@ def _visualize_gradcam(model, input_tensor, target_layer, image_id, path_out, im
     )
     
     # Initialize GradCAM
-    reshape_transform = _get_reshape_transform(is_multi_view)
+    reshape_transform = _get_reshape_transform(is_multi_view, has_cls_token=has_cls_token)
     cam = GradCAM(
         model=model, 
         target_layers=[target_layer],

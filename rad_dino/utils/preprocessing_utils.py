@@ -4,6 +4,7 @@ import pydicom
 import matplotlib.pyplot as plt
 import cv2
 import os
+import uuid
 from pydicom.pixels import apply_rescale, apply_voi_lut
 from PIL import Image
 from typing import Sequence
@@ -32,9 +33,9 @@ def create_symlinks_parallel(
             if raise_on_missing:
                 raise FileNotFoundError(f"Source image not found: {src}")
             return f"Source image not found: {src}"
-        if os.path.exists(dst) or os.path.islink(dst):
-            os.remove(dst)
-        os.symlink(src, dst)
+        tmp = f"{dst}.{uuid.uuid4().hex}"
+        os.symlink(src, tmp)
+        os.replace(tmp, dst)
         return None
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
