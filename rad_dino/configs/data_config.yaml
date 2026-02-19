@@ -1,5 +1,5 @@
 VinDr-CXR:
-  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR"
+  data_root_folder: "/mnt/ocean_storage/users/cchang/VinDr-CXR"
   num_workers: 4
 
 RSNA-Pneumonia:
@@ -7,17 +7,17 @@ RSNA-Pneumonia:
   num_workers: 16
 
 VinDr-Mammo:
-  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/single_view"
+  data_root_folder: "/mnt/ocean_storage/users/cchang/birads/single_view"
   num_workers: 4 
   multi_view:
     num_views: 4
     view_fusion_type: "mean"
     adapter_dim: null
     view_fusion_hidden_dim: null
-    data_root_folder_multi_view: "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view"
+    data_root_folder_multi_view: "/mnt/ocean_storage/users/cchang/birads/multi_view"
 
 TAIX-Ray:
-  data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/TAIX-Ray"
+  data_root_folder: "/mnt/ocean_storage/users/cchang/TAIX-Ray"
   num_workers: 4
 
 NODE21:
@@ -26,4 +26,12 @@ NODE21:
 
 COVID-CXR:
   data_root_folder: "/hpcwork/rwth1833/datasets/preprocessed/COVID-CXR"
+  num_workers: 4
+
+VinDr-PCXR:
+  data_root_folder: "/mnt/ocean_storage/users/cchang/preprocessed_data/VinDr-PCXR"
+  num_workers: 4
+
+VinDr-SpineXR:
+  data_root_folder: "/mnt/ocean_storage/users/cchang/preprocessed_data/VinDr-SpineXR"
   num_workers: 4

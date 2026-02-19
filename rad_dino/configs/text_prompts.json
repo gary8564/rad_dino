@@ -60,5 +60,25 @@
             "a chest x-ray image showing no signs of COVID-19",
             "a chest x-ray image showing signs of COVID-19"
         ]
+    },
+    "VinDr-SpineXR": {
+        "multilabel": {
+            "positive_template": "a spine x-ray image with {}",
+            "negative_template": "a spine x-ray image without {}",
+            "class_names": [
+                "no finding",
+                "osteophytes",
+                "disc space narrowing",
+                "foraminal stenosis",
+                "other lesions",
+                "surgical implant",
+                "spondylolysthesis",
+                "vertebral collapse"
+            ]
+        },
+        "binary": [
+            "a normal spine x-ray image",
+            "an abnormal spine x-ray image"
+        ]
     }
 }

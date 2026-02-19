@@ -1,4 +1,4 @@
-#!/usr/bin/zsh 
+#!/bin/bash
 
 ### Job Parameters 
 #SBATCH --nodes=1
@@ -6,18 +6,12 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem-per-cpu=8G 
-#SBATCH --time=1:00:00                 
-#SBATCH --job-name=medimageinsight_rsnapneumonia_zero_shot_eval_binary
-#SBATCH --output=stdout_medimageinsight_rsnapneumonia_zero_shot_eval_binary.txt    
-#SBATCH --account=rwth1833              
-
+#SBATCH --mem=32G
+#SBATCH --time=3:00:00
 
 ### Setup
 source "${HOME}/.bashrc"
-module avail GCC
-module load GCC/12.2.0
-conda activate rad-dino
+micromamba activate rad-dino
 
 ### Configuration
 TASK="binary"                       # choices: multilabel | multiclass | binary
@@ -32,7 +26,7 @@ DEVICE="cuda"                      # choices: cuda | cpu
 ARK_CHECKPOINT_PATH="/hpcwork/rwth1833/models/ark/Ark+_Nature/Ark6_swinLarge768_ep50.pth.tar"
 
 # MedSigLIP / MedImageInsight: path to custom text prompts JSON (use absolute path)
-CUSTOM_TEXT_PROMPTS="${HOME}/master_thesis/rad_dino/rad_dino/configs/text_prompts.json"
+CUSTOM_TEXT_PROMPTS="${HOME}/rad_dino/rad_dino/configs/text_prompts.json"
 
 # MedImageInsight: path to the cloned lion-ai/MedImageInsights repo
 # MEDIMAGEINSIGHT_PATH="/custom/path/to/MedImageInsights"
