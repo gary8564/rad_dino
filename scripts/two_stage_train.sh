@@ -1,4 +1,4 @@
-#!/usr/bin/zsh 
+#!/usr/bin/bash 
 
 ### SLURM Job Parameters (ignore if running locally)
 #SBATCH --nodes=1

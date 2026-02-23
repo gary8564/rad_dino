@@ -104,7 +104,9 @@ def get_backbone_layer_names(model: BaseClassifier) -> List[str]:
 
     if isinstance(model, DinoClassifier):
         n = model.backbone.config.num_hidden_layers
-        return [f"backbone.encoder.layer.{i}" for i in range(n)]
+        if hasattr(model.backbone, "encoder"):
+            return [f"backbone.encoder.layer.{i}" for i in range(n)]
+        return [f"backbone.layer.{i}" for i in range(n)]
 
     if isinstance(model, MedSigClassifier):
         n = model.backbone.config.vision_config.num_hidden_layers
@@ -182,6 +184,7 @@ def compute_layerwise_cka(
     dataloader: DataLoader,
     device: torch.device,
     layers: Optional[List[str]] = None,
+    max_batches: Optional[int] = None,
 ) -> Tuple[np.ndarray, List[str]]:
     """
     Compute the layerwise CKA matrix between two models sharing the same
@@ -194,6 +197,7 @@ def compute_layerwise_cka(
         device: Torch device.
         layers: Layer names to compare. If None, auto-resolved via
                 ``get_backbone_layer_names(model1)``.
+        max_batches: If set, only use this many batches for CKA (subsampling).
 
     Returns:
         ``(cka_matrix, layer_names)`` where ``cka_matrix`` has shape ``[N_layers, N_layers]``.
@@ -201,20 +205,32 @@ def compute_layerwise_cka(
     if layers is None:
         layers = get_backbone_layer_names(model1)
     N = len(layers)
-    logger.info("Computing layerwise CKA over %d layers, %d batches", N, len(dataloader))
+
+    total_batches = len(dataloader)
+    effective_batches = min(total_batches, max_batches) if max_batches else total_batches
+    logger.info(
+        "Computing layerwise CKA over %d layers, %d/%d batches",
+        N, effective_batches, total_batches,
+    )
 
     model1.eval()
     model2.eval()
 
-    # Accumulate HSIC terms across batches: [N, N, 3] for (KK, KL, LL)
-    hsic_accum = torch.zeros(N, N, 3)
-    num_batches = len(dataloader)
+    # Separate accumulators: self-HSIC per layer (1-D) + cross-HSIC (2-D)
+    hsic_kk_accum = torch.zeros(N, device="cpu")
+    hsic_ll_accum = torch.zeros(N, device="cpu")
+    hsic_kl_accum = torch.zeros(N, N, device="cpu")
 
     collector1 = _FeatureCollector(model1, layers)
     collector2 = _FeatureCollector(model2, layers)
 
     try:
-        for batch in tqdm(dataloader, desc="CKA layerwise", leave=False):
+        for batch_idx, batch in enumerate(
+            tqdm(dataloader, desc="CKA layerwise", total=effective_batches, leave=False)
+        ):
+            if max_batches and batch_idx >= max_batches:
+                break
+
             images = batch["pixel_values"].to(device)
 
             collector1.clear()
@@ -226,28 +242,35 @@ def compute_layerwise_cka(
             feat1_list = [collector1.features[name].flatten(1) for name in layers]
             feat2_list = [collector2.features[name].flatten(1) for name in layers]
 
+            # Precompute gram matrices and self-HSIC for all layers (2*N instead of N^2)
+            grams1 = []
             for i in range(N):
                 X = feat1_list[i].float()
                 K = X @ X.t()
                 K.fill_diagonal_(0.0)
-                hsic_kk = _unbiased_hsic(K, K)
+                grams1.append(K)
+                hsic_kk_accum[i] += _unbiased_hsic(K, K) / effective_batches
 
+            grams2 = []
+            for j in range(N):
+                Y = feat2_list[j].float()
+                L = Y @ Y.t()
+                L.fill_diagonal_(0.0)
+                grams2.append(L)
+                hsic_ll_accum[j] += _unbiased_hsic(L, L) / effective_batches
+
+            # Cross-HSIC (the only N^2 work that's unavoidable)
+            for i in range(N):
                 for j in range(N):
-                    Y = feat2_list[j].float()
-                    L = Y @ Y.t()
-                    L.fill_diagonal_(0.0)
-
-                    hsic_accum[i, j, 0] += hsic_kk / num_batches
-                    hsic_accum[i, j, 1] += _unbiased_hsic(K, L) / num_batches
-                    hsic_accum[i, j, 2] += _unbiased_hsic(L, L) / num_batches
+                    hsic_kl_accum[i, j] += _unbiased_hsic(grams1[i], grams2[j]) / effective_batches
     finally:
         collector1.remove_hooks()
         collector2.remove_hooks()
 
-    # CKA = HSIC(K,L) / sqrt(HSIC(K,K) * HSIC(L,L))
-    denom = torch.sqrt(hsic_accum[:, :, 0] * hsic_accum[:, :, 2])
+    # CKA[i,j] = HSIC(K_i, L_j) / sqrt(HSIC(K_i, K_i) * HSIC(L_j, L_j))
+    denom = torch.sqrt(hsic_kk_accum[:, None] * hsic_ll_accum[None, :])
     denom = torch.clamp(denom, min=1e-12)
-    cka_matrix = (hsic_accum[:, :, 1] / denom).numpy()
+    cka_matrix = (hsic_kl_accum / denom).numpy()
 
     logger.info("Layerwise CKA matrix computed: shape %s", cka_matrix.shape)
     return cka_matrix, layers

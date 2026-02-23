@@ -1,4 +1,4 @@
-#!/usr/bin/zsh 
+#!/usr/bin/bash 
 
 ### Job Parameters 
 #SBATCH --nodes=1

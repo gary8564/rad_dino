@@ -111,8 +111,6 @@ def prepare_vindrpcxr(path_root: str, output_dir: str,
     df_test = df_test.astype(int)
 
     # 3) VERIFY IMAGES EXIST ON DISK AND DROP MISSING ENTRIES
-    #    The raw download may be incomplete, so we keep only image_ids
-    #    that have a corresponding .dicom file on disk.
     for split, df in [("train", df_train), ("test", df_test)]:
         src_folder = os.path.join(path_root, split)
         existing_files = set(os.listdir(src_folder))
@@ -129,8 +127,8 @@ def prepare_vindrpcxr(path_root: str, output_dir: str,
         else:
             df_test = df_test[mask.values]
 
-    logger.info(f"Train set: {len(df_train)} images (after filtering missing files)")
-    logger.info(f"Test set: {len(df_test)} images (after filtering missing files)")
+    logger.info(f"Train set: {len(df_train)} images")
+    logger.info(f"Test set: {len(df_test)} images")
     logger.info(f"Train label distribution:\n{df_train.sum().to_string()}")
     logger.info(f"Test label distribution:\n{df_test.sum().to_string()}")
 

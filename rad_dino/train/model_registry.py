@@ -119,6 +119,7 @@ class ModelRegistry:
         self.register_unfreeze_handler('dinov3-base', UnfreezeViTHandler())
         self.register_unfreeze_handler('dinov3-large', UnfreezeViTHandler())
         self.register_unfreeze_handler('rad-dino', UnfreezeViTHandler())
+        self.register_unfreeze_handler('biomedclip', UnfreezeBiomedCLIPHandler())
     
     def register_unfreeze_handler(self, model_type: str, unfreeze_handler: UnfreezeModelHandler):
         """Register a new unfreeze handler for a specific model type.

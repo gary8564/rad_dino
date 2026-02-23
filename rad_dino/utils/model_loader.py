@@ -14,6 +14,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _resolve_checkpoint_path(checkpoint_dir: str) -> str:
+    if os.path.isfile(checkpoint_dir):
+        return checkpoint_dir
+    best_path = os.path.join(checkpoint_dir, "best.pt")
+    if os.path.isfile(best_path):
+        return best_path
+    raise FileNotFoundError(
+        f"No checkpoint found at '{checkpoint_dir}' (not a file) "
+        f"or '{best_path}' (does not exist)."
+    )
+
+
 def _migrate_state_dict_keys(state_dict: dict) -> dict:
     """
     Remap legacy state_dict keys produced by old classifier classes.
@@ -57,8 +69,7 @@ def _load_best_dino_model(checkpoint_dir: str,
                      multi_view: bool = False, 
                      return_attentions: bool = False) -> DinoClassifier:
     """Load PyTorch model from checkpoint"""
-    # Load multi-view configuration from checkpoint
-    ckpt = torch.load(os.path.join(checkpoint_dir, "best.pt"), map_location=accelerator.device)
+    ckpt = torch.load(_resolve_checkpoint_path(checkpoint_dir), map_location=accelerator.device)
     
     # Get multi-view parameters from checkpoint or use defaults
     num_views = ckpt.get("num_views", 4)
@@ -86,8 +97,7 @@ def _load_best_ark_model(checkpoint_dir: str,
                          multi_view: bool = False, 
                          return_attention: bool = False) -> ArkClassifier:
     """Load Ark PyTorch model from checkpoint"""
-    # Load the trained classifier weights to get configuration
-    ckpt = torch.load(os.path.join(checkpoint_dir, "best.pt"), map_location=accelerator.device)
+    ckpt = torch.load(_resolve_checkpoint_path(checkpoint_dir), map_location=accelerator.device)
     
     # Get multi-view parameters from checkpoint or use defaults
     num_views = ckpt.get("num_views")
@@ -162,8 +172,7 @@ def _load_best_medsig_model(checkpoint_dir: str,
                             multi_view: bool = False, 
                             return_attentions: bool = False) -> MedSigClassifier:
     """Load MedSig PyTorch model from checkpoint"""
-    # Load multi-view configuration from checkpoint
-    ckpt = torch.load(os.path.join(checkpoint_dir, "best.pt"), map_location=accelerator.device)
+    ckpt = torch.load(_resolve_checkpoint_path(checkpoint_dir), map_location=accelerator.device)
     
     # Get multi-view parameters from checkpoint or use defaults
     num_views = ckpt.get("num_views")
@@ -202,7 +211,7 @@ def _load_best_medimageinsight_model(checkpoint_dir: str,
     Returns:
         MedImageInsightClassifier instance.
     """
-    ckpt = torch.load(os.path.join(checkpoint_dir, "best.pt"), map_location=accelerator.device)
+    ckpt = torch.load(_resolve_checkpoint_path(checkpoint_dir), map_location=accelerator.device)
 
     # Get multi-view parameters from checkpoint
     num_views = ckpt.get("num_views")
@@ -245,7 +254,7 @@ def _load_best_biomedclip_model(checkpoint_dir: str,
     Returns:
         Loaded ``BiomedCLIPClassifier``.
     """
-    ckpt = torch.load(os.path.join(checkpoint_dir, "best.pt"), map_location=accelerator.device)
+    ckpt = torch.load(_resolve_checkpoint_path(checkpoint_dir), map_location=accelerator.device)
 
     # Get multi-view parameters from checkpoint
     num_views = ckpt.get("num_views")
