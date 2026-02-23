@@ -7,9 +7,9 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G 
-#SBATCH --time=3:00:00                 
-#SBATCH --job-name=svm_eval
-#SBATCH --output=stdout_svm_eval.txt    
+#SBATCH --time=2:00:00                 
+#SBATCH --job-name=svm_eval_medsiglip_node21
+#SBATCH --output=stdout_svm_eval_medsiglip_node21.txt    
 #SBATCH --account=rwth1833              
 
 
@@ -22,7 +22,7 @@ conda activate rad-dino
 ### Configuration
 TASK="binary"
 DATA="NODE21"
-MODEL="dinov2-base"
+MODEL="medsiglip"
 OUTPUT_PATH="/work/rwth1833/experiments/"
 BATCH_SIZE=32
 
@@ -30,7 +30,7 @@ BATCH_SIZE=32
 MAX_ITER=5000
 
 # Optional
-# PRETRAINED_ARK_PATH="/path/to/ark/checkpoint.pt"
+PRETRAINED_ARK_PATH="/work/rwth1833/models/ark/Ark+_Nature/Ark6_swinLarge768_ep50.pth.tar"
 # MEDIMAGEINSIGHT_PATH="/custom/path/to/MedImageInsights"
 
 EXTRA_ARGS="--optimize-compute"

@@ -44,7 +44,6 @@ def plot_layerwise_cka(
 
     fig, ax = plt.subplots(figsize=(6, 5))
 
-    # Use seaborn heatmap with default colormap, range [0, 1]
     sns.heatmap(
         cka_matrix,
         vmin=0, vmax=1,
