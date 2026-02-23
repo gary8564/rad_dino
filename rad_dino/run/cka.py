@@ -1,12 +1,7 @@
 """
 CKA (Centered Kernel Alignment) analysis.
 
-Two modes:
-- ``layerwise``: Compare pretrained vs fine-tuned backbone layer-by-layer.
-- ``crossmodel``: Compare last-layer representations across different FMs.
-
 Usage examples::
-
     # Layerwise CKA (pretrained vs fine-tuned)
     python rad_dino/run/cka.py \\
         --mode layerwise \\
@@ -35,7 +30,6 @@ from accelerate import Accelerator
 
 from rad_dino.data.data_loader import create_test_loader
 from rad_dino.data.dataset import RadImageClassificationDataset
-from rad_dino.data.label_mapping import class_labels_mapping
 from rad_dino.eval.cka_analyzer import (
     compute_crossmodel_cka,
     compute_layerwise_cka,
@@ -65,10 +59,6 @@ DEFAULT_MEDIMAGEINSIGHT_PATH = os.path.normpath(
 
 ALL_MODELS = list(MODEL_REPOS.keys()) + ["medimageinsight", "biomedclip"]
 
-
-# ---------------------------------------------------------------------------
-# Argument parser
-# ---------------------------------------------------------------------------
 
 def get_args_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser("CKA analysis for foundation models")
@@ -142,11 +132,6 @@ def get_args_parser() -> argparse.ArgumentParser:
 
     return parser
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _validate_layerwise_args(args):
     if args.model is None:
         raise ValueError("--model is required for layerwise mode.")
@@ -198,10 +183,6 @@ def _create_test_dataloader(args, accelerator: Accelerator, model_name: str):
     return test_loader
 
 
-# ---------------------------------------------------------------------------
-# Layerwise CKA
-# ---------------------------------------------------------------------------
-
 def run_layerwise(args, accelerator: Accelerator) -> None:
     """Run layerwise CKA: pretrained backbone vs fine-tuned model."""
     _validate_layerwise_args(args)
@@ -252,10 +233,6 @@ def run_layerwise(args, accelerator: Accelerator) -> None:
 
     logger.info("Layerwise CKA complete. Results in %s", output_dir)
 
-
-# ---------------------------------------------------------------------------
-# Cross-model CKA
-# ---------------------------------------------------------------------------
 
 def run_crossmodel(args, accelerator: Accelerator) -> None:
     """Run cross-model CKA: last-layer features across multiple FMs."""
@@ -316,10 +293,6 @@ def run_crossmodel(args, accelerator: Accelerator) -> None:
 
     logger.info("Cross-model CKA complete. Results in %s", output_dir)
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main():
     args = get_args_parser().parse_args()

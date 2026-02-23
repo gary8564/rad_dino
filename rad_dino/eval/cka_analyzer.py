@@ -1,11 +1,8 @@
 """
 Centered Kernel Alignment (CKA) analysis for comparing neural network representations.
 
-Provides two analyses:
-1. **Layerwise CKA**: Compares internal representations between a pretrained and
-   fine-tuned version of the same model (Figure 7 in Huix et al., WACV 2024).
-2. **Cross-model CKA**: Compares last-layer representations across different
-   foundation models on the same dataset (Figure 8 in Huix et al., WACV 2024).
+1. Layerwise CKA: Compares internal representations between a pretrained and fine-tuned version of the same model.
+2. Cross-model CKA: Compares last-layer representations across different foundation models on the same dataset.
 
 References:
     - Kornblith et al., "Similarity of Neural Network Representations Revisited", ICML 2019.
@@ -29,10 +26,7 @@ from rad_dino.models.base import BaseClassifier
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# CKA / HSIC computation
-# ---------------------------------------------------------------------------
-
+# CKA / HSIC computation helper functions
 def _unbiased_hsic(K: torch.Tensor, L: torch.Tensor) -> float:
     """
     Unbiased estimator of the Hilbert-Schmidt Independence Criterion.
@@ -84,10 +78,7 @@ def linear_cka(X: torch.Tensor, Y: torch.Tensor) -> float:
     return hsic_KL / denom
 
 
-# ---------------------------------------------------------------------------
-# Layer name resolution
-# ---------------------------------------------------------------------------
-
+# Layer name resolution helper function
 def get_backbone_layer_names(model: BaseClassifier) -> List[str]:
     """
     Return the ordered list of transformer-block-level layer names for
@@ -132,10 +123,7 @@ def get_backbone_layer_names(model: BaseClassifier) -> List[str]:
     raise ValueError(f"Unsupported model type for CKA layer resolution: {type(model).__name__}")
 
 
-# ---------------------------------------------------------------------------
 # Hook-based feature collection
-# ---------------------------------------------------------------------------
-
 class _FeatureCollector:
     """Registers forward hooks on named layers and collects their outputs."""
 
@@ -173,10 +161,7 @@ class _FeatureCollector:
         self._handles.clear()
 
 
-# ---------------------------------------------------------------------------
 # Layerwise CKA (pretrained vs fine-tuned)
-# ---------------------------------------------------------------------------
-
 @torch.no_grad()
 def compute_layerwise_cka(
     model1: BaseClassifier,
@@ -187,20 +172,19 @@ def compute_layerwise_cka(
     max_batches: Optional[int] = None,
 ) -> Tuple[np.ndarray, List[str]]:
     """
-    Compute the layerwise CKA matrix between two models sharing the same
-    architecture (e.g. pretrained vs fine-tuned).
+    Compute the layerwise CKA matrix between pretrained and fine-tuned models.
 
     Args:
-        model1: First model (e.g. pretrained backbone).
-        model2: Second model (e.g. fine-tuned model).
-        dataloader: Test dataloader yielding ``{"pixel_values": ..., "labels": ...}``.
+        model1: Pretrained model.
+        model2: Fine-tuned model.
+        dataloader: Test dataloader {"pixel_values": ..., "labels": ...}.
         device: Torch device.
-        layers: Layer names to compare. If None, auto-resolved via
-                ``get_backbone_layer_names(model1)``.
+        layers: Layer names to compare. 
+                If None, auto-resolved via get_backbone_layer_names(model1).
         max_batches: If set, only use this many batches for CKA (subsampling).
 
     Returns:
-        ``(cka_matrix, layer_names)`` where ``cka_matrix`` has shape ``[N_layers, N_layers]``.
+        (cka_matrix, layer_names) where cka_matrix has shape [N_layers, N_layers].
     """
     if layers is None:
         layers = get_backbone_layer_names(model1)
@@ -276,10 +260,7 @@ def compute_layerwise_cka(
     return cka_matrix, layers
 
 
-# ---------------------------------------------------------------------------
-# Cross-model CKA (last-layer features)
-# ---------------------------------------------------------------------------
-
+# Cross-model CKA (last-layer feature representation comparison)
 def compute_crossmodel_cka(
     features_dict: Dict[str, np.ndarray],
 ) -> Tuple[np.ndarray, List[str]]:
@@ -287,13 +268,11 @@ def compute_crossmodel_cka(
     Compute pairwise CKA between last-layer features from multiple models.
 
     Args:
-        features_dict: Mapping ``{model_name: features}`` where ``features`` has
-                       shape ``[N_samples, D]``. All feature matrices must share
-                       the same ``N_samples`` (same dataset, same ordering).
+        features_dict: Mapping {model_name: features} where features has
+                       shape [N_samples, D]. 
 
     Returns:
-        ``(cka_matrix, model_names)`` where ``cka_matrix`` has shape ``[M, M]``
-        for M models.
+        (cka_matrix, model_names) where cka_matrix has shape [M, M] for M models.
     """
     model_names = list(features_dict.keys())
     M = len(model_names)
