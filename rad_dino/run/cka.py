@@ -71,13 +71,23 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task", type=str, required=True,
-        choices=["binary", "multiclass"],
+        choices=["binary", "multiclass", "multilabel"],
     )
     parser.add_argument(
         "--data", type=str, required=True,
-        choices=["TBX11", "SIIM-ACR", "VinDr-Mammo", "NODE21"],
+        choices=[
+            "TBX11", "SIIM-ACR", "VinDr-Mammo", "NODE21",
+            "TAIX-Ray", "VinDr-CXR", "RSNA-Pneumonia",
+            "COVID-CXR", "VinDr-PCXR", "VinDr-SpineXR",
+        ],
     )
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument(
+        "--max-batches", type=int, default=None,
+        help="Limit the number of test batches used for CKA computation. "
+             "CKA converges well with a subset of the data. "
+             "If None, all batches are used.",
+    )
     parser.add_argument("--output-path", type=str, required=True)
     parser.add_argument(
         "--optimize-compute", action="store_true",
@@ -106,6 +116,10 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
 
     # --- optional model-specific paths ---
+    parser.add_argument(
+        "--multi-view", action="store_true",
+        help="Enable multi-view processing (e.g. mammography).",
+    )
     parser.add_argument(
         "--pretrained-ark-path", type=str, default=None,
         help="Path to Ark pre-trained checkpoint.",
@@ -198,6 +212,7 @@ def run_layerwise(args, accelerator: Accelerator) -> None:
     # Compute layerwise CKA
     cka_matrix, layer_names = compute_layerwise_cka(
         pretrained_model, finetuned_model, test_loader, device,
+        max_batches=args.max_batches,
     )
 
     # Save results
@@ -246,7 +261,10 @@ def run_crossmodel(args, accelerator: Accelerator) -> None:
         model = model_wrapper.model
         model.eval()
 
-        feats, _ = extract_features(model, test_loader, device, normalize=True)
+        feats, _ = extract_features(
+            model, test_loader, device, normalize=True,
+            max_batches=args.max_batches,
+        )
         features_dict[model_name] = feats
         logger.info("  %s features: %s", model_name, feats.shape)
 

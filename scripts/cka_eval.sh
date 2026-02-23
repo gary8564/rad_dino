@@ -1,79 +1,112 @@
-#!/usr/bin/zsh 
+#!/usr/bin/bash
 
-### Job Parameters 
+### SLURM Job Parameters
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G 
-#SBATCH --time=3:00:00                 
-#SBATCH --job-name=cka_eval
-#SBATCH --output=stdout_cka_eval.txt    
-#SBATCH --account=rwth1833              
-
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=6:00:00
+#SBATCH --job-name=cka_eval_taixray
+#SBATCH --output=stdout_cka_eval_taixray_%j.txt
 
 ### Setup
 source "${HOME}/.bashrc"
-module avail GCC
-module load GCC/12.2.0
 conda activate rad-dino
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_VISIBLE_DEVICES=0
+
 ### Configuration
-TASK="binary"
-DATA="NODE21"
-OUTPUT_PATH="/work/rwth1833/experiments/"
+TASK="multilabel"
+DATA="TAIX-Ray"
+OUTPUT_PATH="/mnt/ocean_storage/users/cchang/experiments"
 BATCH_SIZE=32
+MAX_BATCHES=200
 
-# Analysis mode: "layerwise" or "crossmodel"
-MODE="layerwise"
+CKPT_BASE="/mnt/ocean_storage/users/cchang/checkpoints/cxr_benchmark"
 
-# Optional model-specific paths
-# PRETRAINED_ARK_PATH="/path/to/ark/checkpoint.pt"
-# MEDIMAGEINSIGHT_PATH="/custom/path/to/MedImageInsights"
+PRETRAINED_ARK_PATH="/mnt/ocean_storage/users/cchang/pretrained_models/ark/Ark+_Nature/Ark6_swinLarge768_ep50.pth.tar"
 
-EXTRA_ARGS="--optimize-compute"
-
-# if [[ -n "$PRETRAINED_ARK_PATH" ]]; then
-#   EXTRA_ARGS+=" --pretrained-ark-path $PRETRAINED_ARK_PATH"
-# fi
-
-# if [[ -n "$MEDIMAGEINSIGHT_PATH" ]]; then
-#   EXTRA_ARGS+=" --medimageinsight-path $MEDIMAGEINSIGHT_PATH"
-# fi
+EXTRA_ARGS="--optimize-compute --max-batches $MAX_BATCHES"
 
 
-### ---- Layerwise mode ----
-# Compare pretrained vs fine-tuned backbone for a single model
-if [[ "$MODE" == "layerwise" ]]; then
-  MODEL="dinov2-large"
-  CHECKPOINT_DIR="/path/to/finetuned/checkpoint"
+ALL_MODELS=(
+  "dinov2-large"
+  "dinov3-large"
+  "rad-dino"
+  "medsiglip"
+  "ark"
+  "biomedclip"
+  "medimageinsight"
+)
+
+ALL_CHECKPOINTS=(
+  "${CKPT_BASE}/checkpoints_2025_10_20_010501_TAIX-Ray_dinov2-large_unfreeze_backbone.pt"
+  "${CKPT_BASE}/checkpoints_2025_10_20_010620_TAIX-Ray_dinov3-large_unfreeze_backbone.pt"
+  "${CKPT_BASE}/checkpoints_2025_08_11_230242_TAIX-Ray_rad-dino_unfreeze_backbone.pt"
+  "${CKPT_BASE}/checkpoints_2025_08_11_223131_TAIX-Ray_medsiglip_unfreeze_backbone.pt"
+  "${CKPT_BASE}/checkpoints_2025_08_11_221119_TAIX-Ray_ark_unfreeze_backbone.pt"
+  "${CKPT_BASE}/taix_ray_biomedclip_finetune/checkpoints_2026_02_18_221450_TAIX-Ray_biomedclip_unfreeze_backbone"
+  "${CKPT_BASE}/taix_ray_medimageinsight_finetune/checkpoints_2026_02_18_211809_TAIX-Ray_medimageinsight_unfreeze_backbone"
+)
+
+# Layerwise CKA — only models that still need to run
+# (dinov2-large, rad-dino, medsiglip, ark, biomedclip already completed)
+# ---------------------------------------------------------------------------
+LAYERWISE_MODELS=(
+  "dinov3-large"
+  "medimageinsight"
+)
+
+LAYERWISE_CHECKPOINTS=(
+  "${CKPT_BASE}/checkpoints_2025_10_20_010620_TAIX-Ray_dinov3-large_unfreeze_backbone.pt"
+  "${CKPT_BASE}/taix_ray_medimageinsight_finetune/checkpoints_2026_02_18_211809_TAIX-Ray_medimageinsight_unfreeze_backbone"
+)
+
+echo "========================================"
+echo "  Layerwise CKA: remaining models"
+echo "========================================"
+
+for i in "${!LAYERWISE_MODELS[@]}"; do
+  MODEL="${LAYERWISE_MODELS[$i]}"
+  CKPT="${LAYERWISE_CHECKPOINTS[$i]}"
+
+  echo ""
+  echo "--- [${MODEL}] ---"
+
+  MODEL_ARGS="$EXTRA_ARGS"
+  if [[ "$MODEL" == "ark" ]]; then
+    MODEL_ARGS+=" --pretrained-ark-path $PRETRAINED_ARK_PATH"
+  fi
 
   python rad_dino/run/cka.py \
       --mode layerwise \
       --task $TASK \
       --data $DATA \
-      --model $MODEL \
-      --checkpoint-dir $CHECKPOINT_DIR \
+      --model "$MODEL" \
+      --checkpoint-dir "$CKPT" \
       --output-path $OUTPUT_PATH \
       --batch-size $BATCH_SIZE \
-      $EXTRA_ARGS
-fi
+      $MODEL_ARGS
+done
 
 
-### ---- Cross-model mode ----
-# Compare last-layer CKA across multiple fine-tuned models
-if [[ "$MODE" == "crossmodel" ]]; then
-  MODELS="dinov2-large rad-dino medsiglip ark biomedclip medimageinsight"
-  CHECKPOINT_DIRS="/path/to/ckpt1 /path/to/ckpt2 /path/to/ckpt3 /path/to/ckpt4 /path/to/ckpt5 /path/to/ckpt6"
+### ---- Cross-model CKA ----
+echo ""
+echo "========================================"
+echo "  Cross-model CKA: last-layer comparison"
+echo "========================================"
 
-  python rad_dino/run/cka.py \
-      --mode crossmodel \
-      --task $TASK \
-      --data $DATA \
-      --models $MODELS \
-      --checkpoint-dirs $CHECKPOINT_DIRS \
-      --output-path $OUTPUT_PATH \
-      --batch-size $BATCH_SIZE \
-      $EXTRA_ARGS
-fi
+CROSSMODEL_ARGS="$EXTRA_ARGS"
+CROSSMODEL_ARGS+=" --pretrained-ark-path $PRETRAINED_ARK_PATH"
+
+python rad_dino/run/cka.py \
+    --mode crossmodel \
+    --task $TASK \
+    --data $DATA \
+    --models "${ALL_MODELS[@]}" \
+    --checkpoint-dirs "${ALL_CHECKPOINTS[@]}" \
+    --output-path $OUTPUT_PATH \
+    --batch-size $BATCH_SIZE \
+    $CROSSMODEL_ARGS

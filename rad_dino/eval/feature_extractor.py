@@ -59,6 +59,7 @@ def extract_features(
     loader: DataLoader,
     device: torch.device,
     normalize: bool = True,
+    max_batches: Optional[int] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract backbone features and labels from a DataLoader.
@@ -72,6 +73,7 @@ def extract_features(
         loader: DataLoader.
         device: Torch device.
         normalize: If True, L2-normalise feature vectors.
+        max_batches: If set, only process the first max_batches batches.
 
     Returns:
         Tuple of (features, labels) with shapes [N, embed_dim] and [N, ...] respectively.
@@ -93,7 +95,13 @@ def extract_features(
     all_features = []
     all_labels = []
 
-    for batch in tqdm(loader, desc="Extracting features", leave=False):
+    effective_total = min(len(loader), max_batches) if max_batches else len(loader)
+    for batch_idx, batch in enumerate(
+        tqdm(loader, desc="Extracting features", total=effective_total, leave=False)
+    ):
+        if max_batches and batch_idx >= max_batches:
+            break
+
         images = batch["pixel_values"].to(device)
         labels = batch["labels"]
 
