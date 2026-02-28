@@ -62,7 +62,7 @@ def linear_cka(X: torch.Tensor, Y: torch.Tensor) -> float:
     X = X.float()
     Y = Y.float()
 
-    # Gram matrices with zeroed diagonals (unbiased estimator requirement)
+    # Gram matrices with zeroed diagonals
     K = X @ X.t()
     K.fill_diagonal_(0.0)
     L = Y @ Y.t()
@@ -117,8 +117,14 @@ def get_backbone_layer_names(model: BaseClassifier) -> List[str]:
 
     if isinstance(model, MedImageInsightClassifier):
         image_encoder = model.backbone.image_encoder
-        n = len(image_encoder.blocks)
-        return [f"backbone.image_encoder.blocks.{i}" for i in range(n)]
+        layers = []
+        for stage_idx, stage in enumerate(image_encoder.blocks):
+            num_blocks = len(stage)
+            for block_idx in range(num_blocks):
+                layers.append(
+                    f"backbone.image_encoder.blocks.{stage_idx}.{block_idx}"
+                )
+        return layers
 
     raise ValueError(f"Unsupported model type for CKA layer resolution: {type(model).__name__}")
 
@@ -200,7 +206,7 @@ def compute_layerwise_cka(
     model1.eval()
     model2.eval()
 
-    # Separate accumulators: self-HSIC per layer (1-D) + cross-HSIC (2-D)
+    # Separate accumulators: self-HSIC per layer (1-D) and cross-HSIC (2-D)
     hsic_kk_accum = torch.zeros(N, device="cpu")
     hsic_ll_accum = torch.zeros(N, device="cpu")
     hsic_kl_accum = torch.zeros(N, N, device="cpu")
@@ -243,7 +249,7 @@ def compute_layerwise_cka(
                 grams2.append(L)
                 hsic_ll_accum[j] += _unbiased_hsic(L, L) / effective_batches
 
-            # Cross-HSIC (the only N^2 work that's unavoidable)
+            # Cross-HSIC
             for i in range(N):
                 for j in range(N):
                     hsic_kl_accum[i, j] += _unbiased_hsic(grams1[i], grams2[j]) / effective_batches
@@ -252,9 +258,12 @@ def compute_layerwise_cka(
         collector2.remove_hooks()
 
     # CKA[i,j] = HSIC(K_i, L_j) / sqrt(HSIC(K_i, K_i) * HSIC(L_j, L_j))
-    denom = torch.sqrt(hsic_kk_accum[:, None] * hsic_ll_accum[None, :])
+    # The unbiased HSIC estimator can yield negative values with small batch sizes, 
+    # causing sqrt(neg) -> NaN.  To avoid this, we clamp the product to zero first.
+    prod = hsic_kk_accum[:, None] * hsic_ll_accum[None, :]
+    denom = torch.sqrt(torch.clamp(prod, min=0.0))
     denom = torch.clamp(denom, min=1e-12)
-    cka_matrix = (hsic_kl_accum / denom).numpy()
+    cka_matrix = torch.clamp(hsic_kl_accum / denom, min=0.0, max=1.0).numpy()
 
     logger.info("Layerwise CKA matrix computed: shape %s", cka_matrix.shape)
     return cka_matrix, layers
