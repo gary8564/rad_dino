@@ -69,10 +69,6 @@ def get_args_parser() -> argparse.ArgumentParser:
         help="Dimensionality reduction method (default: umap).",
     )
     parser.add_argument(
-        "--multi-view", action="store_true",
-        help="Enable multi-view processing (VinDr-Mammo).",
-    )
-    parser.add_argument(
         "--optimize-compute", action="store_true",
         help="Use mixed precision (fp16) for feature extraction.",
     )
@@ -111,8 +107,6 @@ def get_args_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = get_args_parser().parse_args()
 
-    if args.multi_view and args.data != "VinDr-Mammo":
-        raise ValueError("Multi-view is only supported for VinDr-Mammo.")
     if args.model == "ark" and args.pretrained_ark_path is None:
         raise ValueError("Ark requires --pretrained-ark-path.")
 

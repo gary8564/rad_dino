@@ -53,8 +53,6 @@ def get_args_parser() -> argparse.ArgumentParser:
                        help="Path to the cloned lion-ai/MedImageInsights repository (default: rad_dino/models/MedImageInsights/).")
     parser.add_argument('--output-path', required=True, type=str)
     parser.add_argument('--batch-size', type=int, default=16)
-    parser.add_argument('--multi-view', action='store_true', 
-                       help="Enable multi-view processing for mammography data")
     parser.add_argument("--optimize-compute", action="store_true",
                        help="Whether to use advanced tricks to lessen the heavy computational resource.")
     parser.add_argument('--show-attention', action='store_true')
@@ -90,9 +88,6 @@ def get_args_parser() -> argparse.ArgumentParser:
 
 def validate_args(config: InferenceConfig) -> None:
     """Validate command line arguments"""
-    if config.multi_view and config.data != 'VinDr-Mammo':
-        raise ValueError("Multi-view processing is only supported for VinDr-Mammo dataset")
-    
     # MedImageInsight (DaViT) and Ark (Swin) do not support attention/rollout
     # explainability.  Swin's hierarchical windowed attention cannot be stitched
     # into a meaningful global attention map -- the original Swin paper uses
@@ -331,22 +326,18 @@ def determine_class_info(config: InferenceConfig, dataset: RadImageClassificatio
     
     return class_labels, num_classes
 
-def setup_data_loader(config: InferenceConfig, accelerator: Accelerator) -> tuple[RadImageClassificationDataset, DataLoader]:
-    """Setup dataset and data loader
-    Args:
-        config: Inference configuration
-        accelerator: Accelerator for distributed computing
-        
+def setup_data_loader(config: InferenceConfig, accelerator: Accelerator) -> tuple[RadImageClassificationDataset, DataLoader, bool]:
+    """Setup dataset and data loader.
+
     Returns:
-        tuple: (Dataset, DataLoader)
+        tuple: (Dataset, DataLoader, use_multi_view)
     """
     # Setup data configs 
     data_config, _ = setup_configs(config.data, config.task)
+    use_multi_view = data_config.is_multi_view
+    data_root_folder = data_config.data_root_folder
     
-    # Get data root folder from config
-    data_root_folder = data_config.get_data_root_folder(config.multi_view)
-
-    # Setup transforms
+    # Setup transforms for test data
     _, test_transforms = get_transforms(config.model)
 
     # Create test dataset and data loader
@@ -355,18 +346,17 @@ def setup_data_loader(config: InferenceConfig, accelerator: Accelerator) -> tupl
         task=config.task,
         batch_size=config.batch_size,
         test_transforms=test_transforms,
-        multi_view=config.multi_view
+        multi_view=use_multi_view,
     )
     test_ds = test_loader.dataset
     test_loader = accelerator.prepare(test_loader)
-    return test_ds, test_loader
+    return test_ds, test_loader, use_multi_view
 
 def setup_model(config: InferenceConfig, repo: str, num_classes: int, 
-                              accelerator: Accelerator) -> Any:
+                accelerator: Accelerator, multi_view: bool) -> Any:
     """Setup model"""
-    # Load model
     model_wrapper = load_model(config.model_path, config.model, repo, num_classes, accelerator, 
-                              config.show_attention, config.multi_view,
+                              config.show_attention, multi_view,
                               medimageinsight_path=config.medimageinsight_path)
 
     # In-place torch.compile: compiles the forward pass without
@@ -530,7 +520,6 @@ def main():
         model_path=args.model_path,
         output_path=args.output_path,
         batch_size=args.batch_size,
-        multi_view=args.multi_view,
         optimize_compute=args.optimize_compute,
         compile=args.compile,
         show_attention=args.show_attention,
@@ -559,16 +548,16 @@ def main():
         raise ValueError(f"Model {config.model} is not supported. Please choose from {list(MODEL_REPOS.keys())}.")
     else:
         repo = MODEL_REPOS[config.model]
-    logger.info(f"Running inference with multi_view={config.multi_view}")
     
-    # Setup data loader and dataset
-    test_dataset, test_loader = setup_data_loader(config, accelerator)
+    # Setup data loader and dataset 
+    test_dataset, test_loader, use_multi_view = setup_data_loader(config, accelerator)
+    logger.info(f"Running inference with multi_view={use_multi_view}")
     
     # Determine class information for model setup
     class_labels, num_classes = determine_class_info(config, test_dataset)
     
     # Setup model and validation
-    model_wrapper = setup_model(config, repo, num_classes, accelerator)
+    model_wrapper = setup_model(config, repo, num_classes, accelerator, use_multi_view)
 
     # Setup output directories
     modelname = config.model_path.rsplit('/', 1)[-1]

@@ -174,15 +174,14 @@ def build_backbone_model(args, device: torch.device) -> BaseClassifier:
     (``num_classes=1``) and is never called.  For multi-view, only mean
     fusion is used (no learned parameters).
     """
-    multi_view_config = None
-    if args.multi_view:
-        data_config, _ = setup_configs(args.data, args.task)
-        multi_view_config = data_config.get_multi_view_config(args.multi_view)
+    data_config, _ = setup_configs(args.data, args.task)
+    use_multi_view = data_config.is_multi_view
+    multi_view_config = data_config.multi_view
 
     mv_kwargs = dict(
-        multi_view=args.multi_view,
+        multi_view=use_multi_view,
         num_views=multi_view_config.num_views if multi_view_config else None,
-        view_fusion_type="mean" if args.multi_view else None,
+        view_fusion_type="mean" if use_multi_view else None,
     )
 
     if args.model == "biomedclip":
@@ -252,10 +251,6 @@ def add_args(parser) -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--output-path", required=True, type=str)
     parser.add_argument(
-        "--multi-view", action="store_true",
-        help="Enable multi-view processing for mammography data.",
-    )
-    parser.add_argument(
         "--optimize-compute", action="store_true",
         help="Use mixed precision (fp16) for feature extraction.",
     )
@@ -279,8 +274,6 @@ def validate_args(args) -> None:
             "single-label one-hot voting and LinearSVC is not designed for "
             "multi-label outputs. Use linear probing or fine-tuning instead."
         )
-    if args.multi_view and args.data != "VinDr-Mammo":
-        raise ValueError("Multi-view is only supported for VinDr-Mammo.")
     if args.model == "ark" and getattr(args, "pretrained_ark_path", None) is None:
         raise ValueError("Ark requires --pretrained-ark-path.")
     if args.model == "medimageinsight":
@@ -301,13 +294,13 @@ def setup_data_and_features(args, accelerator: Accelerator, model: BaseClassifie
     """
     device = accelerator.device
     data_config, _ = setup_configs(args.data, args.task)
-    data_root_folder = data_config.get_data_root_folder(args.multi_view)
+    use_multi_view = data_config.is_multi_view
+    data_root_folder = data_config.data_root_folder
     _, eval_transforms = get_transforms(args.model)
 
-    # Train loader (eval transforms - no augmentation for feature extraction)
     train_ds = RadImageClassificationDataset(
         data_root_folder, "train", args.task,
-        transform=eval_transforms, multi_view=args.multi_view,
+        transform=eval_transforms, multi_view=use_multi_view,
     )
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=False,
@@ -315,13 +308,12 @@ def setup_data_and_features(args, accelerator: Accelerator, model: BaseClassifie
         drop_last=False, collate_fn=collate_fn,
     )
 
-    # Test loader
     test_loader = create_test_loader(
         data_root_folder=data_root_folder,
         task=args.task,
         batch_size=args.batch_size,
         test_transforms=eval_transforms,
-        multi_view=args.multi_view,
+        multi_view=use_multi_view,
     )
     test_ds = test_loader.dataset
 

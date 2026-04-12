@@ -3,19 +3,19 @@ CKA (Centered Kernel Alignment) analysis.
 
 Usage examples::
     # Layerwise CKA (pretrained vs fine-tuned)
-    python rad_dino/run/cka.py \\
-        --mode layerwise \\
-        --model dinov2-large \\
-        --checkpoint-dir /path/to/finetuned/checkpoint \\
-        --data TBX11 --task binary \\
+    python rad_dino/run/cka.py \
+        --mode layerwise \
+        --model dinov2-large \
+        --checkpoint-dir /path/to/finetuned/checkpoint \
+        --data TBX11 --task binary \
         --output-path /path/to/output
 
     # Cross-model CKA
-    python rad_dino/run/cka.py \\
-        --mode crossmodel \\
-        --models dinov2-large rad-dino medsiglip \\
-        --checkpoint-dirs /path/to/ckpt1 /path/to/ckpt2 /path/to/ckpt3 \\
-        --data TBX11 --task binary \\
+    python rad_dino/run/cka.py \
+        --mode crossmodel \
+        --models dinov2-large rad-dino medsiglip \
+        --checkpoint-dirs /path/to/ckpt1 /path/to/ckpt2 /path/to/ckpt3 \
+        --data TBX11 --task binary \
         --output-path /path/to/output
 """
 
@@ -94,32 +94,25 @@ def get_args_parser() -> argparse.ArgumentParser:
         help="Use mixed precision (fp16).",
     )
 
-    # --- layerwise mode ---
     parser.add_argument(
         "--model", type=str, default=None, choices=ALL_MODELS,
-        help="Model name (layerwise mode).",
+        help="Model name for layerwise CKA.",
     )
     parser.add_argument(
         "--checkpoint-dir", type=str, default=None,
-        help="Path to the fine-tuned checkpoint directory (layerwise mode).",
+        help="Path to the fine-tuned checkpoint directory for layerwise CKA.",
     )
 
-    # --- crossmodel mode ---
     parser.add_argument(
         "--models", nargs="+", type=str, default=None,
-        help="List of model names (crossmodel mode).",
+        help="List of model names for crossmodel CKA.",
     )
     parser.add_argument(
         "--checkpoint-dirs", nargs="+", type=str, default=None,
-        help="List of fine-tuned checkpoint directories, one per model "
-             "(crossmodel mode).",
+        help="List of fine-tuned checkpoint directories, one per model for crossmodel CKA.",
     )
 
-    # --- optional model-specific paths ---
-    parser.add_argument(
-        "--multi-view", action="store_true",
-        help="Enable multi-view processing (e.g. mammography).",
-    )
+    # Optional model-specific paths
     parser.add_argument(
         "--pretrained-ark-path", type=str, default=None,
         help="Path to Ark pre-trained checkpoint.",
@@ -169,9 +162,9 @@ def _determine_num_classes(task: str, dataset: RadImageClassificationDataset) ->
 
 def _create_test_dataloader(args, accelerator: Accelerator, model_name: str):
     """Create a test dataloader for CKA evaluation."""
-    multi_view = getattr(args, "multi_view", False)
     data_config, _ = setup_configs(args.data, args.task)
-    data_root_folder = data_config.get_data_root_folder(use_multi_view=multi_view)
+    multi_view = data_config.is_multi_view
+    data_root_folder = data_config.data_root_folder
     _, eval_transforms = get_transforms(model_name)
 
     test_loader = create_test_loader(
@@ -186,10 +179,10 @@ def _create_test_dataloader(args, accelerator: Accelerator, model_name: str):
 
 def _get_multi_view_config(args):
     """Return multi-view kwargs for model construction."""
-    if not getattr(args, "multi_view", False):
-        return {}
     data_config, _ = setup_configs(args.data, args.task)
-    mv_config = data_config.get_multi_view_config(args.multi_view)
+    mv_config = data_config.multi_view
+    if mv_config is None:
+        return {}
     return dict(
         num_views=mv_config.num_views,
         view_fusion_type=mv_config.view_fusion_type,
@@ -202,7 +195,8 @@ def run_layerwise(args, accelerator: Accelerator) -> None:
     """Run layerwise CKA: pretrained backbone vs fine-tuned model."""
     _validate_layerwise_args(args)
     device = accelerator.device
-    multi_view = getattr(args, "multi_view", False)
+    data_config, _ = setup_configs(args.data, args.task)
+    multi_view = data_config.is_multi_view
 
     # Build pretrained backbone (frozen, dummy classifier head)
     pretrained_model = build_backbone_model(args, device)
@@ -254,7 +248,8 @@ def run_crossmodel(args, accelerator: Accelerator) -> None:
     """Run cross-model CKA: last-layer features across multiple FMs."""
     _validate_crossmodel_args(args)
     device = accelerator.device
-    multi_view = getattr(args, "multi_view", False)
+    data_config, _ = setup_configs(args.data, args.task)
+    multi_view = data_config.is_multi_view
 
     features_dict = {}
 

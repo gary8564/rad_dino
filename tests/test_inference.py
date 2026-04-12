@@ -69,22 +69,9 @@ class TestInference(unittest.TestCase):
             model="rad-dino",
             model_path="test/path",
             output_path="test/output",
-            multi_view=True
         )
         # Should not raise any exception
         validate_args(valid_config)
-        
-        # Test invalid multi-view with non-mammo data
-        invalid_config = InferenceConfig(
-            task="multilabel",
-            data="VinDr-CXR",
-            model="rad-dino",
-            model_path="test/path",
-            output_path="test/output",
-            multi_view=True
-        )
-        with self.assertRaises(ValueError):
-            validate_args(invalid_config)
         
         # Test attention visualization without required params
         attention_config = InferenceConfig(
@@ -185,31 +172,6 @@ class TestInference(unittest.TestCase):
         validate_args(config)
         self.assertTrue(config.show_feature_maps)
 
-    def test_multi_view_validation(self):
-        """Test multi-view validation logic"""
-        # Test valid multi-view with mammo data
-        valid_config = InferenceConfig(
-            task="multiclass",
-            data="VinDr-Mammo",
-            model="rad-dino",
-            model_path="test/path",
-            output_path="test/output",
-            multi_view=True
-        )
-        validate_args(valid_config)  # Should not raise
-        
-        # Test invalid multi-view with non-mammo data
-        invalid_config = InferenceConfig(
-            task="multiclass",
-            data="VinDr-CXR",
-            model="rad-dino",
-            model_path="test/path",
-            output_path="test/output",
-            multi_view=True
-        )
-        with self.assertRaises(ValueError):
-            validate_args(invalid_config)
-
     def test_attention_visualization_validation(self):
         """Test attention visualization validation"""
         # Test valid attention config
@@ -257,7 +219,7 @@ class TestInference(unittest.TestCase):
         mock_ds = Mock()
         mock_ds.labels = ['label1', 'label2']
         mock_loader = Mock()
-        mock_setup_data_loader.return_value = (mock_ds, mock_loader)
+        mock_setup_data_loader.return_value = (mock_ds, mock_loader, False)
         
         # Mock determine_class_info
         mock_determine_class_info.return_value = (['label1', 'label2'], 2)

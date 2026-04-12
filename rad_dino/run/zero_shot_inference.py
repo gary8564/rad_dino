@@ -549,9 +549,6 @@ def get_args_parser() -> argparse.ArgumentParser:
                             "This flag must be specified with `--model medimageinsight`.")
     parser.add_argument('--use-rsna-head', action='store_true', default=False,
                        help="Use pretrained RSNA task head and convert to binary task. This flag only works when `--model ark --data RSNA-Pneumonia --task binary`.")
-    parser.add_argument('--multi-view', action='store_true', default=False,
-                       help="Enable multi-view processing for mammography data. "
-                            "Image embeddings from all views are average pooled before comparison with text embeddings.")
     return parser
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -581,8 +578,6 @@ def validate_args(args: argparse.Namespace) -> None:
                 f"datasets and cannot be used for zero-shot transfer on '{args.data}' "
                 f"(out-of-distribution). Use a VLM model instead."
             )
-    if args.multi_view and args.data != "VinDr-Mammo":
-        raise ValueError("--multi-view is only supported for VinDr-Mammo.")
         
 def get_text_prompts(prompt_file: str, dataset: str, task: str) -> Union[List[str], Dict[str, Any]]:
     """
@@ -670,8 +665,12 @@ def main():
     # Setup configs
     data_config, _ = setup_configs(args.data, args.task)
     
-    # Get data root folder from config
-    data_root_folder = data_config.get_data_root_folder(args.multi_view)
+    # Auto-detect multi-view from data config
+    use_multi_view = data_config.is_multi_view
+    multi_view_config = data_config.multi_view
+    num_views = multi_view_config.num_views if multi_view_config else None
+    data_root_folder = data_config.data_root_folder
+
     # If VinDr-Mammo binary, route to binary preprocessed folder if available
     if args.data == "VinDr-Mammo" and args.task == "binary":
         candidate_path = data_root_folder.replace("/birads/", "/binary/")
@@ -680,26 +679,20 @@ def main():
             logger.info(f"Using VinDr-Mammo binary preprocessed data at: {data_root_folder}")
     
     # Setup dataset
-    # For MedSigLIP, use AutoImageProcessor
-    # For Ark, MedImageInsight, and BiomedCLIP, use torchvision.transforms.Compose
     if args.model in ("ark", "medimageinsight", "biomedclip"):
         model_name = None
         _, test_transforms = get_transforms(model_name=args.model)
     else:
         model_name = args.model
         test_transforms = None
-    
-    # Resolve multi-view config
-    multi_view_config = data_config.get_multi_view_config(args.multi_view)
-    num_views = multi_view_config.num_views if multi_view_config else None
 
     test_loader = create_test_loader(
         data_root_folder=data_root_folder,
         task=args.task,
         test_transforms=test_transforms,
         batch_size=args.batch_size,
-        multi_view=args.multi_view,
-        model_name=model_name
+        multi_view=use_multi_view,
+        model_name=model_name,
     )
     dataset = test_loader.dataset
     
@@ -758,7 +751,7 @@ def main():
     if args.model in ("medsiglip", "medimageinsight", "biomedclip"):
         results = classifier.run_zero_shot_inference(
             test_loader, evaluation_processor, text_prompts,
-            multi_view=args.multi_view, num_views=num_views,
+            multi_view=use_multi_view, num_views=num_views,
         )
     elif args.model == "ark":
         if args.use_rsna_head:
@@ -773,7 +766,7 @@ def main():
                 dataset_name=args.data,
                 task_type=args.task,
                 downstream_target_labels=class_labels,
-                multi_view=args.multi_view,
+                multi_view=use_multi_view,
                 num_views=num_views,
             )
     logger.info(f"Zero-shot inference with dataset {args.data} using pretrained {args.model} completed!")

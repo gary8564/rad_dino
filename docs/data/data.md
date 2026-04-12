@@ -180,16 +180,15 @@ images/train/
 └── ...
 ```
 
-## Verifying Data Integrity
+## Verify no data leakage
 
 After preprocessing any dataset, you can check for data leakage (overlapping
 sample IDs or patient IDs between splits) using the shared checker:
 
 ```bash
 python -m rad_dino.data.check_data_leakage \
-    --data-dir /path/to/preprocessed/RSNA-Pneumonia
+    --data-dir /path/to/preprocessed/dataset
 ```
-
 
 ## Configuration
 

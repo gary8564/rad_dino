@@ -40,7 +40,6 @@ def get_args_parser(add_help: bool = True):
     parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray', 'NODE21', 'COVID-CXR', 'VinDr-SpineXR', 'VinDr-PCXR', 'TBX11K', 'SIIM-ACR'])
     parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov2-large-reg', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
-    parser.add_argument('--multi-view', action='store_true', help="Enable multi-view processing for mammography data")
     parser.add_argument(
         "--unfreeze-backbone",
         action="store_true",
@@ -126,18 +125,17 @@ def setup(args, accelerator: Accelerator):
     # Setup configs
     data_config, train_config = setup_configs(args.data, args.task) 
     num_workers = data_config.num_workers
-    
-    # Get multi-view configuration
-    multi_view_config = data_config.get_multi_view_config(args.multi_view)
+    use_multi_view = data_config.is_multi_view
+    multi_view_config = data_config.multi_view
     
     # Get data augmentation transforms
     train_transforms, val_transforms = get_transforms(args.model)
    
     # Data setup
     batch_size = train_config.batch_size
-    data_root_folder = data_config.get_data_root_folder(args.multi_view)
+    data_root_folder = data_config.data_root_folder
     
-    logger.info(f"Loading data for {args.data} with kfold={args.kfold} and multi_view={args.multi_view}")
+    logger.info(f"Loading data for {args.data} with kfold={args.kfold} and multi_view={use_multi_view}")
     data_loader = load_data(
         data_root_folder,
         args.task,
@@ -147,7 +145,7 @@ def setup(args, accelerator: Accelerator):
         num_workers,
         accelerator.gradient_accumulation_steps,
         kfold=args.kfold,
-        multi_view=args.multi_view,
+        multi_view=use_multi_view,
         train_subset_fraction=args.train_subset,
     )
 
@@ -174,7 +172,7 @@ def setup(args, accelerator: Accelerator):
         model = BiomedCLIPClassifier(
             backbone,
             num_classes=num_classes,
-            multi_view=args.multi_view,
+            multi_view=use_multi_view,
             num_views=multi_view_config.num_views if multi_view_config else None,
             view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
             adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -190,7 +188,7 @@ def setup(args, accelerator: Accelerator):
         model = MedImageInsightClassifier(
             backbone,
             num_classes=num_classes,
-            multi_view=args.multi_view,
+            multi_view=use_multi_view,
             num_views=multi_view_config.num_views if multi_view_config else None,
             view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
             adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -223,7 +221,7 @@ def setup(args, accelerator: Accelerator):
         )
         model = ArkClassifier(backbone, 
                                num_classes=num_classes, 
-                               multi_view=args.multi_view, 
+                               multi_view=use_multi_view, 
                                num_views=multi_view_config.num_views if multi_view_config else None,
                                view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
                                adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -234,7 +232,7 @@ def setup(args, accelerator: Accelerator):
         backbone = load_pretrained_model(model_repo)
         model = MedSigClassifier(backbone, 
                                num_classes=num_classes, 
-                               multi_view=args.multi_view, 
+                               multi_view=use_multi_view, 
                                num_views=multi_view_config.num_views if multi_view_config else None,
                                view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
                                adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -246,7 +244,7 @@ def setup(args, accelerator: Accelerator):
         backbone = load_pretrained_model(model_repo)
         model = DinoClassifier(backbone, 
                                num_classes=num_classes, 
-                               multi_view=args.multi_view, 
+                               multi_view=use_multi_view, 
                                num_views=multi_view_config.num_views if multi_view_config else None,
                                view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
                                adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -368,8 +366,6 @@ def main(args):
         checkpoint_folder_name += "_progressive_unfreeze"
     elif args.unfreeze_backbone:
         checkpoint_folder_name += "_unfreeze_backbone"
-    if args.multi_view:
-        checkpoint_folder_name += "_multi_view"
     output_dir = os.path.abspath(args.output_dir)
     checkpoint_dir = os.path.join(output_dir, checkpoint_folder_name)
     if args.resume_checkpoint_dir:

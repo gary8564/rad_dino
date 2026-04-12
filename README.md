@@ -129,101 +129,274 @@ Configures Ark zero-shot inference. Contains two dictionaries:
 
 ### Training
 
-Fine-tune or linear-probe a model:
-
+- Linear probing (LP): 
 ```bash
 accelerate launch rad_dino/run/train.py \
     --task multilabel \
     --data VinDr-CXR \
     --model rad-dino \
-    --output-dir ./runs \
+    --output-dir /path/to/output/dir \
+    --optimize-compute --use-bf16
+```
+
+- Fine-tuning (FT): 
+```bash
+accelerate launch rad_dino/run/train.py \
+    --task multilabel \
+    --data VinDr-CXR \
+    --model rad-dino \
+    --output-dir /path/to/output/dir \
     --unfreeze-backbone \
     --optimize-compute --use-bf16
 ```
 
+**Required args:**
 | Flag | Description |
 |------|-------------|
-| `--task` | `multilabel`, `multiclass`, or `binary` |
+| `--task` | Classification task: `multilabel`, `multiclass`, or `binary` |
 | `--data` | Dataset name (must match a key in `data_config.yaml`) |
-| `--model` | Model identifier (e.g. `rad-dino`, `dinov2-large`, `medsiglip`, `ark`, `medimageinsight`, `biomedclip`) |
+| `--model` | Model identifier: `rad-dino`, `dinov2-{small,base,large}`, `dinov2-large-reg`, `dinov3-{small-plus,base,large}`, `medsiglip`, `ark`, `medimageinsight`, `biomedclip` |
 | `--output-dir` | Base directory for checkpoints (e.g. `./runs`) |
-| `--unfreeze-backbone` | Unfreeze the pretrained backbone for fine-tuning (default: linear probe only) |
-| `--kfold N` | K-fold cross-validation |
-| `--optimize-compute` | Mixed-precision training (fp16) |
-| `--use-bf16` | Use bf16 precision (requires `--optimize-compute`) |
-| `--weighted-loss` | Apply class-weighted loss |
-| `--wandb` | Enable Weights & Biases logging |
-| `--resume` | Resume from checkpoint (requires `--resume-checkpoint-dir`) |
-| `--pretrained-ark-path` | Path to Ark checkpoint (only for `--model ark`) |
-| `--medimageinsight-path` | Path to MedImageInsight repo (only for `--model medimageinsight`) |
+
+**Optional args:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--unfreeze-backbone` | off | Unfreeze the pretrained backbone for fine-tuning (default: linear probe only) |
+| `--unfreeze-num-layers N` | all | Number of transformer blocks to unfreeze from the end (requires `--unfreeze-backbone`) |
+| `--progressive-unfreeze` | off | Progressively unfreeze backbone layers over epochs (requires `--unfreeze-backbone`) |
+| `--kfold N` | — | K-fold cross-validation |
+| `--train-subset F` | — | Fraction of training data to use (0–1), for data-efficiency studies |
+| `--weighted-loss` | off | Apply class-frequency-weighted loss |
+| `--optimize-compute` | off | Enable mixed-precision training (fp16) |
+| `--use-bf16` | off | Use bf16 instead of fp16 (requires `--optimize-compute`) |
+| `--grad-accumulation-steps N` | `2` | Gradient accumulation micro-steps per optimizer step |
+| `--grad-checkpointing` | off | Enable gradient checkpointing to reduce activation memory |
+| `--compile` | off | Compile model with `torch.compile` for faster training |
+| `--return-output-attentions` | off | Compute and return attention maps during training (memory-intensive) |
+| `--wandb` | off | Enable Weights & Biases logging |
+| `--resume` | off | Resume from checkpoint (requires `--resume-checkpoint-dir`) |
+| `--resume-checkpoint-dir PATH` | — | Directory of checkpoint to resume from |
+| `--pretrained-ark-path PATH` | — | Path to Ark pre-trained checkpoint (required for `--model ark`) |
+| `--medimageinsight-path PATH` | `rad_dino/models/MedImageInsights` | Path to cloned MedImageInsights repo |
+
+---
 
 ### Inference & Visualization
 
-Evaluate a trained checkpoint and optionally generate attention / GradCAM maps:
+Evaluate a fine-tuned checkpoint on the test set, with optional explainability outputs.
+
+> [!NOTE]
+> Ark+ (Swin-L) and MedImageInsight (DaViT) use hierarchical architectures that do not produce meaningful global attention maps. Use `--show-feature-maps` for these models instead of `--show-attention`.
 
 ```bash
 python rad_dino/run/inference.py \
     --task binary \
     --data RSNA-Pneumonia \
     --model rad-dino \
-    --model-path ./runs/checkpoints_... \
-    --output-path ./inference_results \
-    --optimize-compute \
-    --show-attention --show-gradcam
+    --model-path /path/to/model/checkpoints \
+    --output-path /path/to/output/dir \
+    --optimize-compute
 ```
+
+**Required args:**
+
+| Flag | Description |
+|------|-------------|
+| `--task` | Classification task: `multilabel`, `multiclass`, or `binary` |
+| `--data` | Dataset name (must match a key in `data_config.yaml`) |
+| `--model` | Model identifier (same choices as training) |
+| `--model-path PATH` | Path to the saved checkpoint directory |
+| `--output-path PATH` | Directory to write results (metrics, figures) |
+
+**Optional args:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--batch-size N` | `16` | Inference batch size |
+| `--optimize-compute` | off | Enable mixed-precision inference (fp16) |
+| `--compile` | off | Compile model with `torch.compile` for faster inference |
+| `--show-attention` | off | Save last-layer attention overlays (ViT/SigLIP models only; requires `--save-heads` and `--attention-threshold`) |
+| `--attention-threshold F` | — | Threshold for attention masking (required with `--show-attention`) |
+| `--save-heads {mean,max,min}` | — | Which attention heads to aggregate (required with `--show-attention`) |
+| `--compute-rollout` | off | Compute attention rollout in addition to raw attention maps (requires `--show-attention`) |
+| `--compute-gradient-rollout` | off | Class-specific gradient rollout (ViT, BiomedCLIP, MedSigLIP models) |
+| `--show-gradcam` | off | Save GradCAM overlays |
+| `--show-feature-maps` | off | Save stage-wise feature map visualizations (Ark and MedImageInsight only) |
+| `--max-visualization-samples N` | `24` | Maximum number of samples to generate visualizations for |
+| `--min-positive-visualization-labels N` | `20` | Minimum positive-target coverage when selecting visualization samples |
+| `--visualization-sample-ids PATH` | — | Text file with one sample ID per line — pins the same samples across runs |
+| `--medimageinsight-path PATH` | `rad_dino/models/MedImageInsights` | Path to cloned MedImageInsights repo |
+
+---
 
 ### Zero-Shot Inference
 
-Run zero-shot classification for VLM models (Ark, MedSigLIP, MedImageInsight, BiomedCLIP):
+Run zero-shot classification for MedSigLIP, BiomedCLIP, MedImageInsight, and Ark.
 
 ```bash
 python rad_dino/run/zero_shot_inference.py \
     --task binary \
     --data TBX11K \
     --model medsiglip \
-    --output-path ./experiments/zero_shot \
+    --output-path /path/to/output/dir \
     --custom-text-prompts rad_dino/configs/text_prompts.json
 ```
 
+**Required args:**
+
+| Flag | Description |
+|------|-------------|
+| `--task` | Classification task: `multilabel`, `multiclass`, or `binary` |
+| `--data` | Dataset name (must match a key in `data_config.yaml`) |
+| `--model` | One of: `medsiglip`, `biomedclip`, `medimageinsight`, `ark` |
+| `--output-path PATH` | Directory to write results |
+| `--custom-text-prompts PATH` | Path to text prompts JSON file (required for `medsiglip`, `biomedclip`, `medimageinsight`) |
+
+**Optional args:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--batch-size N` | `16` | Inference batch size |
+| `--device` | `cuda` | Device to run on (`cuda` or `cpu`) |
+| `--ark-checkpoint-path PATH` | — | Path to Ark pre-trained checkpoint (required for `--model ark`) |
+| `--use-rsna-head` | off | Use the Ark pretrained RSNA head for binary classification (only for `--model ark --data RSNA-Pneumonia --task binary`) |
+| `--medimageinsight-path PATH` | `rad_dino/models/MedImageInsights` | Path to cloned MedImageInsights repo |
+
+---
+
 ### Feature-Based Evaluation (KNN / Linear SVM)
 
-Extract frozen backbone features and evaluate with K-nearest neighbors or a linear SVM:
+Extract frozen backbone features and evaluate with KNN or a linear SVM. 
 
+> [!WARNING]
+> Only `binary` and `multiclass` tasks are supported.
+
+- KNN: 
 ```bash
 python rad_dino/run/knn.py \
     --task binary --data NODE21 --model rad-dino \
-    --output-path ./experiments --batch-size 32 \
-    --nb-knn 20 --temperature 0.07 --optimize-compute
-
-python rad_dino/run/svm.py \
-    --task binary --data NODE21 --model rad-dino \
-    --output-path ./experiments --batch-size 32 \
-    --max-iter 5000 --optimize-compute
+    --output-path /path/to/knn/results \
+    --nb-knn 20 --temperature 0.07
 ```
 
-### CKA Analysis
+- SVM:
+```bash
+python rad_dino/run/svm.py \
+    --task binary --data NODE21 --model rad-dino \
+    --output-path /path/to/svm/results \
+    --max-iter 5000
+```
 
-Compute layerwise or cross-model Centered Kernel Alignment:
+**Required args:**
 
+| Flag | Description |
+|------|-------------|
+| `--task` | `binary` or `multiclass` (`multilabel` not supported) |
+| `--data` | Dataset name (must match a key in `data_config.yaml`) |
+| `--model` | Model identifier: `rad-dino`, `dinov2-large`, `dinov3-large`, `medsiglip`, `ark`, `medimageinsight`, `biomedclip` |
+| `--output-path PATH` | Directory to write results |
+
+**Optional args:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--batch-size N` | `64` | Feature extraction batch size |
+| `--optimize-compute` | off | Enable mixed-precision feature extraction (fp16) |
+| `--nb-knn N [N ...]` | `20` | Number(s) of nearest neighbours to evaluate (KNN only) |
+| `--temperature F` | `0.07` | Softmax temperature for KNN voting (KNN only) |
+| `--max-iter N` | `5000` | Max iterations for LinearSVC (SVM only) |
+| `--pretrained-ark-path PATH` | — | Path to Ark pre-trained checkpoint (required for `--model ark`) |
+| `--medimageinsight-path PATH` | `rad_dino/models/MedImageInsights` | Path to cloned MedImageInsights repo |
+
+---
+
+### Centered Kernel Alignment (CKA) Analysis
+
+- Layerwise CKA:
 ```bash
 python rad_dino/run/cka.py \
     --mode layerwise \
-    --task multiclass --data VinDr-Mammo --model rad-dino \
-    --checkpoint-dir ./runs/checkpoints_... \
-    --output-path ./experiments/cka \
-    --batch-size 32 --max-batches 200 --optimize-compute
+    --task multiclass \
+    --data VinDr-Mammo \
+    --model dinov2-large \
+    --checkpoint-dir /path/to/finetuned/checkpoint \
+    --output-path /path/to/output/dir
 ```
+
+- Cross-model CKA: 
+```bash
+python rad_dino/run/cka.py \
+    --mode crossmodel \
+    --task binary \
+    --data TBX11K \
+    --models dinov2-large rad-dino medsiglip \
+    --checkpoint-dirs /path/to/ckpt1 /path/to/ckpt2 /path/to/ckpt3 \
+    --output-path /path/to/output/dir
+```
+
+**Required args:**
+
+| Flag | Description |
+|------|-------------|
+| `--mode` | `layerwise` (pretrained vs fine-tuned) or `crossmodel` (across models) |
+| `--task` | Classification task: `multilabel`, `multiclass`, or `binary` |
+| `--data` | Dataset name (must match a key in `data_config.yaml`) |
+| `--output-path PATH` | Directory to write results |
+| `--model NAME` | Model name — for `layerwise` mode |
+| `--checkpoint-dir PATH` | Fine-tuned checkpoint directory — for `layerwise` mode |
+| `--models NAME [NAME ...]` | List of model names — for `crossmodel` mode |
+| `--checkpoint-dirs PATH [PATH ...]` | List of checkpoint directories, one per model — for `crossmodel` mode |
+
+**Optional args:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--batch-size N` | `64` | Batch size for feature extraction |
+| `--max-batches N` | all | Limit number of batches used for CKA (CKA converges well on a subset) |
+| `--optimize-compute` | off | Enable mixed-precision (fp16) |
+| `--pretrained-ark-path PATH` | — | Path to Ark pre-trained checkpoint (required for `--model ark`) |
+| `--medimageinsight-path PATH` | `rad_dino/models/MedImageInsights` | Path to cloned MedImageInsights repo |
+
+---
 
 ### Embedding Visualization (UMAP / t-SNE)
 
-Generate 2D scatter plots of backbone embeddings:
+Generate 2D scatter plots of frozen backbone embeddings. 
+> [!WARNING]
+> Only `binary` and `multiclass` tasks are supported.
 
 ```bash
 python rad_dino/run/visualize_embeddings.py \
     --task binary --data NODE21 --model rad-dino \
-    --output-path ./experiments --batch-size 64 \
-    --method umap --metric cosine --optimize-compute
+    --output-path ./experiments/embeddings \
+    --method umap --metric cosine
 ```
+
+**Required args:**
+
+| Flag | Description |
+|------|-------------|
+| `--task` | `binary` or `multiclass` |
+| `--data` | Dataset name (must match a key in `data_config.yaml`) |
+| `--model` | Model identifier |
+| `--output-path PATH` | Directory to write plots |
+
+**Optional args:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--method` | `umap` | Dimensionality reduction method: `umap`, `tsne`, or `supervised-umap` |
+| `--batch-size N` | `64` | Feature extraction batch size |
+| `--metric` | `cosine` | Distance metric: `cosine`, `euclidean`, or `correlation` |
+| `--optimize-compute` | off | Enable mixed-precision feature extraction (fp16) |
+| `--n-neighbors N` | `15` | UMAP locality parameter (ignored for t-SNE) |
+| `--min-dist F` | `0.1` | UMAP minimum distance (ignored for t-SNE) |
+| `--perplexity F` | `30.0` | t-SNE perplexity (ignored for UMAP) |
+| `--learning-rate F` | `200.0` | t-SNE learning rate (ignored for UMAP) |
+| `--n-iter N` | `1000` | t-SNE maximum iterations (ignored for UMAP) |
+| `--random-state N` | `42` | Random seed for reproducibility |
+| `--pretrained-ark-path PATH` | — | Path to Ark pre-trained checkpoint (required for `--model ark`) |
+| `--medimageinsight-path PATH` | `rad_dino/models/MedImageInsights` | Path to cloned MedImageInsights repo (required for `--model medimageinsight`) |
 
 ---
 
