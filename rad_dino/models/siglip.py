@@ -1,6 +1,9 @@
+"""MedSigLIP classifier with optional attention map extraction via encoder patching."""
+
 import torch
+import torch.nn.functional as F
 import logging
-from typing import Optional
+from typing import Optional, List, Tuple
 from transformers import AutoModel
 
 from rad_dino.models.base import BaseClassifier
@@ -8,6 +11,96 @@ from rad_dino.loggings.setup import init_logging
 
 init_logging()
 logger = logging.getLogger(__name__)
+
+
+# Monkey-patch the encoder attention forward.
+def _make_eager_siglip_attn_forward(attn_module, storage=None, retain_grad=False):
+    """
+    Create an eager attention forward for a HuggingFace SiglipAttention module.
+
+    Args:
+        attn_module: The ``self_attn`` module of a SiglipEncoderLayer.
+        storage: Optional list to append attention weight tensors to.
+        retain_grad: If True, call ``retain_grad()`` so gradients are
+            available after backward (required for gradient rollout).
+    """
+    def eager_forward(hidden_states, attention_mask=None, output_attentions=False, **kwargs):
+        bsz, tgt_len, embed_dim = hidden_states.size()
+
+        query_states = attn_module.q_proj(hidden_states)
+        key_states = attn_module.k_proj(hidden_states)
+        value_states = attn_module.v_proj(hidden_states)
+
+        query_states = query_states.view(
+            bsz, tgt_len, attn_module.num_heads, attn_module.head_dim
+        ).transpose(1, 2)
+        key_states = key_states.view(
+            bsz, tgt_len, attn_module.num_heads, attn_module.head_dim
+        ).transpose(1, 2)
+        value_states = value_states.view(
+            bsz, tgt_len, attn_module.num_heads, attn_module.head_dim
+        ).transpose(1, 2)
+
+        attn_weights = torch.matmul(
+            query_states, key_states.transpose(-2, -1)
+        ) * attn_module.scale
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+            query_states.dtype
+        )
+        attn_weights = F.dropout(
+            attn_weights,
+            p=0.0 if not attn_module.training else attn_module.dropout,
+            training=attn_module.training,
+        )
+
+        if retain_grad:
+            attn_weights.retain_grad()
+        if storage is not None:
+            storage.append(attn_weights)
+
+        attn_output = torch.matmul(attn_weights, value_states)
+        attn_output = attn_output.transpose(1, 2).contiguous().reshape(
+            bsz, tgt_len, embed_dim
+        )
+        attn_output = attn_module.out_proj(attn_output)
+
+        return attn_output, attn_weights
+
+    return eager_forward
+
+
+def patch_siglip_encoder_eager(
+    encoder, storage=None, retain_grad=False,
+) -> List[Tuple]:
+    """
+    Monkey-patch all SigLIP encoder attention layers to eager mode.
+
+    Args:
+        encoder: The SigLIP encoder module.
+        storage: Optional list to append attention weight tensors to.
+        retain_grad: If True, call ``retain_grad()`` so gradients are
+            available after backward (required for gradient rollout).
+
+    Returns:
+        A list of ``(attn_module, original_forward)`` tuples for
+        restoration via `unpatch_siglip_encoder`.
+    """
+    originals: List[Tuple] = []
+    for layer in encoder.layers:
+        attn = layer.self_attn
+        originals.append((attn, attn.forward))
+        attn.forward = _make_eager_siglip_attn_forward(
+            attn, storage=storage, retain_grad=retain_grad,
+        )
+    return originals
+
+
+def unpatch_siglip_encoder(originals: List[Tuple]) -> None:
+    """Restore original attention forward methods."""
+    for attn, orig_fwd in originals:
+        attn.forward = orig_fwd
 
 
 class MedSigClassifier(BaseClassifier):
@@ -31,7 +124,7 @@ class MedSigClassifier(BaseClassifier):
         return_attentions: bool = False,
         gradient_checkpointing: bool = False,
     ):
-        embed_dim = backbone.config.text_config.projection_size
+        embed_dim = backbone.config.vision_config.hidden_size
         super().__init__(
             backbone=backbone,
             embed_dim=embed_dim,
@@ -46,19 +139,11 @@ class MedSigClassifier(BaseClassifier):
         # Pooler attention weights captured during forward
         self.last_pooler_attn = None
 
-        # Backward-compatible aliases for old checkpoint state_dict keys
-        # Old checkpoints use ``feat_dim`` nowhere in state_dict (it was just
-        # an instance attr), but ``fusion_layer`` was used instead of
-        # ``view_fusion_layer`` for the mlp_adapter / weighted_mean layer.
-        # We'll handle that in the checkpoint loader.
-        self.feat_dim = self.embed_dim  # alias
+        self.feat_dim = self.embed_dim  # alias for old checkpoints
 
         if gradient_checkpointing:
             self.enable_gradient_checkpointing()
 
-    # ------------------------------------------------------------------
-    # Gradient checkpointing
-    # ------------------------------------------------------------------
 
     def enable_gradient_checkpointing(self):
         try:
@@ -74,10 +159,6 @@ class MedSigClassifier(BaseClassifier):
         except Exception as e:
             logger.warning(f"Failed to disable gradient checkpointing: {e}")
 
-    # ------------------------------------------------------------------
-    # Feature extraction (with optional pooler attention capture)
-    # ------------------------------------------------------------------
-
     def extract_features(self, x: torch.Tensor):
         """
         Extract features from the MedSigLIP vision model.
@@ -91,11 +172,15 @@ class MedSigClassifier(BaseClassifier):
         Returns:
             ``(features, attentions)`` where features are L2-normalised.
         """
+        self.last_pooler_attn = None
+
         # Optionally capture pooler attention weights per-head
         head = getattr(self.backbone.vision_model, "head", None)
         original_head_forward = None
+        attn_storage = None
         if head is not None and hasattr(head, "attention") and self.return_attentions:
             original_head_forward = head.forward
+            setattr(head, "_last_attn_weights", None)
 
             def forward_with_pooler_attn_capture(hidden_state: torch.Tensor):
                 patch_batch_size = hidden_state.shape[0]
@@ -111,17 +196,29 @@ class MedSigClassifier(BaseClassifier):
 
             head.forward = forward_with_pooler_attn_capture
 
-        # Process through vision model
-        vision_outputs = self.backbone.vision_model(
-            pixel_values=x,
-            output_attentions=self.return_attentions,
-            return_dict=True,
-        )
+        # SiglipEncoder does not aggregate or return layer attentions. 
+        # We therefore capture them from the patched attention modules directly.
+        encoder_patches = None
+        vision_outputs = None
+        if self.return_attentions:
+            attn_storage = []
+            encoder_patches = patch_siglip_encoder_eager(
+                self.backbone.vision_model.encoder,
+                storage=attn_storage,
+            )
 
-        # Restore original forward and capture weights
-        if head is not None and original_head_forward is not None:
+        try:
+            vision_outputs = self.backbone.vision_model(
+                pixel_values=x,
+                output_attentions=self.return_attentions,
+                return_dict=True,
+            )
             self.last_pooler_attn = getattr(head, "_last_attn_weights", None)
-            head.forward = original_head_forward
+        finally:
+            if encoder_patches is not None:
+                unpatch_siglip_encoder(encoder_patches)
+            if head is not None and original_head_forward is not None:
+                head.forward = original_head_forward
 
         # L2 normalise pooler output
         features = vision_outputs.pooler_output / vision_outputs.pooler_output.norm(
@@ -129,20 +226,14 @@ class MedSigClassifier(BaseClassifier):
         )
 
         # Stack attention maps
-        if (
-            self.return_attentions
-            and hasattr(vision_outputs, "attentions")
-            and vision_outputs.attentions is not None
-        ):
-            attentions = torch.stack(vision_outputs.attentions, dim=0)
+        if self.return_attentions and attn_storage:
+            attentions = torch.stack(
+                [a.detach().cpu() for a in attn_storage], dim=0
+            )
         else:
             attentions = None
 
         return features, attentions
-
-    # ------------------------------------------------------------------
-    # Forward override — adds attention multi-view reshaping
-    # ------------------------------------------------------------------
 
     def forward(self, pixel_values: torch.Tensor):
         """Forward pass with optional attention map multi-view reshaping."""
@@ -157,63 +248,3 @@ class MedSigClassifier(BaseClassifier):
             )
 
         return logits, attentions
-
-
-if __name__ == "__main__":
-    import os
-    from transformers import AutoModel
-    from dotenv import load_dotenv, find_dotenv
-    from huggingface_hub import login
-
-    load_dotenv(find_dotenv())
-    hf_token = os.getenv("HF_TOKEN")
-    login(token=hf_token)
-
-    def unfreeze_layers(model, num_unfreeze_layers):
-        num_total_layers = model.backbone.config.vision_config.num_hidden_layers
-        assert num_unfreeze_layers <= num_total_layers
-        for name, param in model.backbone.named_parameters():
-            param.requires_grad = False
-        for i in range(num_total_layers - 1, num_total_layers - num_unfreeze_layers - 1, -1):
-            for name, param in model.backbone.named_parameters():
-                if f"vision_model.encoder.layers.{i}" in name:
-                    param.requires_grad = True
-
-    backbone = AutoModel.from_pretrained("google/medsiglip-448")
-
-    model_single = MedSigClassifier(backbone, num_classes=10, multi_view=False, return_attentions=True)
-    print("Single-view model created successfully")
-
-    model_multi = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="mean", return_attentions=True)
-    print("Multi-view model created successfully")
-
-    model_weighted = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="weighted_mean", return_attentions=True)
-    model_adapter = MedSigClassifier(backbone, num_classes=10, multi_view=True, num_views=4, view_fusion_type="mlp_adapter", return_attentions=True)
-    print("All fusion types created successfully")
-
-    model_with_grad_ckpt = MedSigClassifier(backbone, num_classes=10, multi_view=False, gradient_checkpointing=True)
-    print("Model with gradient checkpointing created successfully")
-
-    unfreeze_layers(model_multi, 2)
-    for name, param in model_multi.named_parameters():
-        if "backbone" in name:
-            if param.requires_grad:
-                print(f"Parameter name: {name}")
-        else:
-            param.requires_grad = True
-            print(f"Parameter name: {name}")
-
-    total_params = sum(p.numel() for p in model_multi.parameters())
-    print(f"{total_params:,} total parameters.")
-    total_trainable_params = sum(
-        p.numel() for p in model_multi.parameters() if p.requires_grad
-    )
-    print(f"{total_trainable_params:,} training parameters.")
-
-    dummy_input_single = torch.randn(2, 3, 448, 448)
-    logits_single, attns_single = model_single(dummy_input_single)
-    print(f"Single-view output shapes: logits {logits_single.shape}, attention maps {attns_single.shape}")
-
-    dummy_input_multi = torch.randn(2, 4, 3, 448, 448)
-    logits_multi, attns_multi = model_multi(dummy_input_multi)
-    print(f"Multi-view output shapes: logits {logits_multi.shape}, attention maps {attns_multi.shape}")

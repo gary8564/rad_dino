@@ -62,7 +62,7 @@ def linear_cka(X: torch.Tensor, Y: torch.Tensor) -> float:
     X = X.float()
     Y = Y.float()
 
-    # Gram matrices with zeroed diagonals (unbiased estimator requirement)
+    # Gram matrices with zeroed diagonals
     K = X @ X.t()
     K.fill_diagonal_(0.0)
     L = Y @ Y.t()
@@ -72,10 +72,50 @@ def linear_cka(X: torch.Tensor, Y: torch.Tensor) -> float:
     hsic_KK = _unbiased_hsic(K, K)
     hsic_LL = _unbiased_hsic(L, L)
 
-    denom = np.sqrt(hsic_KK * hsic_LL)
-    if denom < 1e-12:
+    denom = np.sqrt(max(hsic_KK * hsic_LL, 0.0))
+    if not np.isfinite(denom) or denom < 1e-12:
         return 0.0
-    return hsic_KL / denom
+    score = hsic_KL / denom
+    return float(np.clip(np.nan_to_num(score, nan=0.0, posinf=0.0, neginf=0.0), 0.0, 1.0))
+
+
+def _get_num_prefix_tokens(model: BaseClassifier) -> int:
+    """
+    Return the number of non-patch prefix tokens for token-based backbones.
+
+    For DINO-family models this is always the CLS token plus any learned
+    register tokens defined in the Hugging Face config. Layerwise CKA should
+    compare patch-token representations rather than mixing global/register
+    tokens into every block representation.
+    """
+    from rad_dino.models.dino import DinoClassifier
+
+    if isinstance(model, DinoClassifier):
+        num_register_tokens = getattr(model.backbone.config, "num_register_tokens", 0) or 0
+        return 1 + int(num_register_tokens)
+    return 0
+
+
+def _prepare_layer_features(
+    feature: torch.Tensor,
+    num_prefix_tokens: int,
+    layer_name: str,
+) -> torch.Tensor:
+    """
+    Convert a hooked layer output into a 2D feature matrix [N, D] for CKA.
+
+    For token-based ViTs, we drop CLS/register prefix tokens so CKA is computed
+    over patch representations only.
+    """
+    if feature.ndim >= 3 and num_prefix_tokens > 0:
+        seq_len = feature.shape[1]
+        if seq_len <= num_prefix_tokens:
+            raise ValueError(
+                f"Layer '{layer_name}' has seq_len={seq_len}, which is not larger than "
+                f"the number of prefix tokens ({num_prefix_tokens})."
+            )
+        feature = feature[:, num_prefix_tokens:, ...]
+    return feature.flatten(1).float()
 
 
 # Layer name resolution helper function
@@ -117,8 +157,14 @@ def get_backbone_layer_names(model: BaseClassifier) -> List[str]:
 
     if isinstance(model, MedImageInsightClassifier):
         image_encoder = model.backbone.image_encoder
-        n = len(image_encoder.blocks)
-        return [f"backbone.image_encoder.blocks.{i}" for i in range(n)]
+        layers = []
+        for stage_idx, stage in enumerate(image_encoder.blocks):
+            num_blocks = len(stage)
+            for block_idx in range(num_blocks):
+                layers.append(
+                    f"backbone.image_encoder.blocks.{stage_idx}.{block_idx}"
+                )
+        return layers
 
     raise ValueError(f"Unsupported model type for CKA layer resolution: {type(model).__name__}")
 
@@ -127,9 +173,15 @@ def get_backbone_layer_names(model: BaseClassifier) -> List[str]:
 class _FeatureCollector:
     """Registers forward hooks on named layers and collects their outputs."""
 
-    def __init__(self, model: nn.Module, layer_names: List[str]):
+    def __init__(
+        self, 
+        model: nn.Module, 
+        layer_names: List[str],
+        output_device: str = "cpu",
+    ):
         self._features: Dict[str, torch.Tensor] = {}
         self._handles: list = []
+        self._output_device = output_device
 
         name_to_module = dict(model.named_modules())
         for name in layer_names:
@@ -146,7 +198,9 @@ class _FeatureCollector:
     def _hook_fn(self, module, inp, out, *, name: str):
         if isinstance(out, tuple):
             out = out[0]
-        self._features[name] = out.detach()
+        # Offload hooked activations immediately so layerwise CKA does not
+        # retain all intermediate features on GPU across both model forwards.
+        self._features[name] = out.detach().to(self._output_device)
 
     @property
     def features(self) -> Dict[str, torch.Tensor]:
@@ -200,13 +254,29 @@ def compute_layerwise_cka(
     model1.eval()
     model2.eval()
 
-    # Separate accumulators: self-HSIC per layer (1-D) + cross-HSIC (2-D)
+    num_prefix_tokens1 = _get_num_prefix_tokens(model1)
+    num_prefix_tokens2 = _get_num_prefix_tokens(model2)
+    if num_prefix_tokens1 != num_prefix_tokens2:
+        logger.warning(
+            "Models use different prefix-token counts for CKA (%d vs %d).",
+            num_prefix_tokens1,
+            num_prefix_tokens2,
+        )
+    if num_prefix_tokens1 or num_prefix_tokens2:
+        logger.info(
+            "Dropping prefix tokens before layerwise CKA: model1=%d, model2=%d",
+            num_prefix_tokens1,
+            num_prefix_tokens2,
+        )
+
+    # Separate accumulators: self-HSIC per layer (1-D) and cross-HSIC (2-D)
     hsic_kk_accum = torch.zeros(N, device="cpu")
     hsic_ll_accum = torch.zeros(N, device="cpu")
     hsic_kl_accum = torch.zeros(N, N, device="cpu")
+    processed_batches = 0
 
-    collector1 = _FeatureCollector(model1, layers)
-    collector2 = _FeatureCollector(model2, layers)
+    collector1 = _FeatureCollector(model1, layers, output_device="cpu")
+    collector2 = _FeatureCollector(model2, layers, output_device="cpu")
 
     try:
         for batch_idx, batch in enumerate(
@@ -223,8 +293,27 @@ def compute_layerwise_cka(
             model1(images)
             model2(images)
 
-            feat1_list = [collector1.features[name].flatten(1) for name in layers]
-            feat2_list = [collector2.features[name].flatten(1) for name in layers]
+            feat1_list = [
+                _prepare_layer_features(
+                    collector1.features[name], num_prefix_tokens1, name
+                )
+                for name in layers
+            ]
+            feat2_list = [
+                _prepare_layer_features(
+                    collector2.features[name], num_prefix_tokens2, name
+                )
+                for name in layers
+            ]
+
+            sample_count = feat1_list[0].shape[0]
+            if sample_count < 4:
+                logger.warning(
+                    "Skipping CKA batch %d with %d effective samples; unbiased HSIC requires at least 4 samples.",
+                    batch_idx,
+                    sample_count,
+                )
+                continue
 
             # Precompute gram matrices and self-HSIC for all layers (2*N instead of N^2)
             grams1 = []
@@ -233,7 +322,7 @@ def compute_layerwise_cka(
                 K = X @ X.t()
                 K.fill_diagonal_(0.0)
                 grams1.append(K)
-                hsic_kk_accum[i] += _unbiased_hsic(K, K) / effective_batches
+                hsic_kk_accum[i] += _unbiased_hsic(K, K)
 
             grams2 = []
             for j in range(N):
@@ -241,22 +330,46 @@ def compute_layerwise_cka(
                 L = Y @ Y.t()
                 L.fill_diagonal_(0.0)
                 grams2.append(L)
-                hsic_ll_accum[j] += _unbiased_hsic(L, L) / effective_batches
+                hsic_ll_accum[j] += _unbiased_hsic(L, L)
 
-            # Cross-HSIC (the only N^2 work that's unavoidable)
+            # Cross-HSIC
             for i in range(N):
                 for j in range(N):
-                    hsic_kl_accum[i, j] += _unbiased_hsic(grams1[i], grams2[j]) / effective_batches
+                    hsic_kl_accum[i, j] += _unbiased_hsic(grams1[i], grams2[j])
+
+            processed_batches += 1
     finally:
         collector1.remove_hooks()
         collector2.remove_hooks()
 
-    # CKA[i,j] = HSIC(K_i, L_j) / sqrt(HSIC(K_i, K_i) * HSIC(L_j, L_j))
-    denom = torch.sqrt(hsic_kk_accum[:, None] * hsic_ll_accum[None, :])
-    denom = torch.clamp(denom, min=1e-12)
-    cka_matrix = (hsic_kl_accum / denom).numpy()
+    if processed_batches == 0:
+        raise ValueError(
+            "Layerwise CKA could not be computed because no batch had at least 4 samples."
+        )
 
-    logger.info("Layerwise CKA matrix computed: shape %s", cka_matrix.shape)
+    # CKA[i,j] = HSIC(K_i, L_j) / sqrt(HSIC(K_i, K_i) * HSIC(L_j, L_j))
+    # The unbiased HSIC estimator can yield negative values with small batch sizes, 
+    # causing sqrt(neg) -> NaN.  To avoid this, we clamp the product to zero first.
+    hsic_kk_mean = hsic_kk_accum / processed_batches
+    hsic_ll_mean = hsic_ll_accum / processed_batches
+    hsic_kl_mean = hsic_kl_accum / processed_batches
+
+    prod = hsic_kk_mean[:, None] * hsic_ll_mean[None, :]
+    denom = torch.sqrt(torch.clamp(prod, min=0.0))
+    denom = torch.clamp(denom, min=1e-12)
+    cka_matrix = hsic_kl_mean / denom
+    cka_matrix = torch.clamp(
+        torch.nan_to_num(cka_matrix, nan=0.0, posinf=0.0, neginf=0.0),
+        min=0.0,
+        max=1.0,
+    ).numpy()
+
+    logger.info(
+        "Layerwise CKA matrix computed: shape %s using %d/%d valid batches",
+        cka_matrix.shape,
+        processed_batches,
+        effective_batches,
+    )
     return cka_matrix, layers
 
 

@@ -1,14 +1,13 @@
 import torch
 import logging
-from rad_dino.loggings.setup import init_logging
-import os
 from typing import Optional, Union
 from accelerate import Accelerator
 from torchmetrics import Accuracy, AUROC, AveragePrecision, F1Score
+from rad_dino.loggings.setup import init_logging
 from rad_dino.utils.model_loader import _migrate_state_dict_keys
+
 init_logging()
 logger = logging.getLogger(__name__)
-CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Get loss function
 def get_criterion(task: str, weights: Union[torch.Tensor, None] = None, device: Union[str, torch.device] = "cpu"):
@@ -43,7 +42,6 @@ def get_eval_metrics(task: str, num_classes: int, device: str):
     if task == "multiclass":
         metrics.update({
             "acc": Accuracy(task="multiclass", num_classes=num_classes),
-            "top5_acc": Accuracy(task="multiclass", num_classes=num_classes, top_k=5),
             "auroc": AUROC(task="multiclass", num_classes=num_classes, average="macro"),
             "ap": AveragePrecision(task="multiclass", num_classes=num_classes, average="macro"),
             "f1_score": F1Score(task="multiclass", num_classes=num_classes)
@@ -58,7 +56,6 @@ def get_eval_metrics(task: str, num_classes: int, device: str):
     elif task == "binary":
         metrics.update({
             "acc": Accuracy(task="binary"),
-            "top5_acc": Accuracy(task="binary", top_k=5),
             "auroc": AUROC(task="binary"),
             "ap": AveragePrecision(task="binary"),
             "f1_score": F1Score(task="binary")
@@ -86,7 +83,7 @@ class EarlyStopping:
             mode: one of {"min", "max"}. In 'min' mode, lower metric is better.
             ckpt_path: where to save the best model checkpoint.
         """
-        assert mode in ("min", "max"), f"`mode` attribute must be specified either `min` or `max`."
+        assert mode in ("min", "max"), "`mode` attribute must be specified either `min` or `max`."
         self.patience = patience
         self.min_delta = min_delta
         self.mode = mode

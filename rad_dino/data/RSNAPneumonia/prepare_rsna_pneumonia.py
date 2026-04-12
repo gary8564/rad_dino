@@ -5,7 +5,7 @@ import logging
 from typing import Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from rad_dino.loggings.setup import init_logging
-from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
+from rad_dino.utils.preprocessing_utils import copy_files_parallel
 from sklearn.model_selection import train_test_split
 init_logging()
 logger = logging.getLogger(__name__)
@@ -19,14 +19,22 @@ def parse_args():
                    help="Path to the preprocessed output directory of the dataset")
     parser.add_argument("--test-size", type=float, default=0.2,
                    help="Fraction to reserve for test dataset")
+    parser.add_argument("--max-workers", type=int, default=32,
+                   help="Parallel workers for copying or symlinking images.")
+    parser.add_argument("--symlink", action="store_true", help="Create symlinks instead of copying source images.")
     return parser.parse_args()
 
-def prepare_rsna_pneumonia(path_root: str, output_dir: str, test_size: float):
+def prepare_rsna_pneumonia(
+    path_root: str,
+    output_dir: str,
+    test_size: float,
+    max_workers: int = 32,
+    use_symlink: bool = False,
+):
     """
     Preprocess the RSNA-Pneumonia dataset.
     """
     if test_size <= 0 or test_size >= 1 or not isinstance(test_size, float):
-        raise AttributeError("`test_size` attribute must be a float type between 0 and 1.")
         raise AttributeError("`test_size` attribute must be a float type between 0 and 1.")
         
     # 1) LOAD AND MAJORITY-VOTE PER PATIENT
@@ -56,32 +64,31 @@ def prepare_rsna_pneumonia(path_root: str, output_dir: str, test_size: float):
     train_df.to_csv(os.path.join(output_dir, "train_labels.csv"), index=False)
     test_df.to_csv(os.path.join(output_dir, "test_labels.csv"), index=False)
     
-    # 3) SYMLINK IMAGES
-    def _create_symlink(src: str, dst: str):
-        """Create a symlink, replacing any existing one."""
-        try:
-            os.symlink(src, dst)
-        except FileExistsError:
-            os.remove(dst)
-            os.symlink(src, dst)
-
+    # 3) COPY DICOM FILES
     src_folder = os.path.join(path_root, "stage_2_train_images")
     for split, df_split in [("train", train_df), ("test", test_df)]:
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
-        symlink_pairs = [
+        file_pairs = [
             (os.path.join(src_folder, f"{image_id}.dcm"),
              os.path.join(dst_folder, f"{image_id}.dcm"))
             for image_id in df_split["image_id"]
         ]
-        create_symlinks_parallel(symlink_pairs)
-        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
+        copy_files_parallel(file_pairs, max_workers=max_workers, use_symlink=use_symlink)
+        action = "Symlinked" if use_symlink else "Copied"
+        logger.info(f"{action} {len(file_pairs)} DICOMs to {dst_folder}")
     logger.info(f"Preprocessing RSNA-Pneumonia complete! The processed dataset is saved in {output_dir}")
 
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    prepare_rsna_pneumonia(args.path_root, args.output_dir, args.test_size)
+    prepare_rsna_pneumonia(
+        args.path_root,
+        args.output_dir,
+        args.test_size,
+        args.max_workers,
+        use_symlink=args.symlink,
+    )
 
 if __name__ == "__main__":
     main()

@@ -4,7 +4,7 @@ import pandas as pd
 import logging
 from sklearn.model_selection import train_test_split
 from rad_dino.loggings.setup import init_logging
-from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
+from rad_dino.utils.preprocessing_utils import copy_files_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -17,9 +17,10 @@ def parse_args():
                         help="Path to the preprocessed output directory of the dataset")
     parser.add_argument("--test-size", type=float, default=0.2,
                         help="Fraction to reserve for test dataset")
+    parser.add_argument("--symlink", action="store_true", help="Create symlinks instead of copying source images.")
     return parser.parse_args()
 
-def prepare_node21(path_root: str, output_dir: str, test_size: float):
+def prepare_node21(path_root: str, output_dir: str, test_size: float, use_symlink: bool = False):
     """
     Preprocess the NODE21 dataset for binary classification (nodule vs no-nodule).
     
@@ -29,7 +30,7 @@ def prepare_node21(path_root: str, output_dir: str, test_size: float):
     
     Args:
         path_root: Root directory containing images/ and metadata.csv
-        output_dir: Directory to write train_labels.csv, test_labels.csv, and symlinked images
+        output_dir: Directory to write train_labels.csv, test_labels.csv, and images
         test_size: Fraction of data to reserve for testing
     """
     if test_size <= 0 or test_size >= 1 or not isinstance(test_size, float):
@@ -83,18 +84,19 @@ def prepare_node21(path_root: str, output_dir: str, test_size: float):
     train_df.to_csv(os.path.join(output_dir, "train_labels.csv"), index=False)
     test_df.to_csv(os.path.join(output_dir, "test_labels.csv"), index=False)
 
-    # 6) SYMLINK IMAGES
+    # 6) COPY IMAGES
     src_folder = os.path.join(path_root, "images")
     for split, df_split in [("train", train_df), ("test", test_df)]:
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
-        symlink_pairs = [
+        file_pairs = [
             (os.path.join(src_folder, f"{image_id}.mha"),
              os.path.join(dst_folder, f"{image_id}.mha"))
             for image_id in df_split["image_id"]
         ]
-        create_symlinks_parallel(symlink_pairs)
-        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
+        copy_files_parallel(file_pairs, use_symlink=use_symlink)
+        action = "Symlinked" if use_symlink else "Copied"
+        logger.info(f"{action} {len(file_pairs)} images to {dst_folder}")
     
     logger.info(f"Preprocessing NODE21 complete! The processed dataset is saved in {output_dir}")
 
@@ -102,7 +104,7 @@ def prepare_node21(path_root: str, output_dir: str, test_size: float):
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    prepare_node21(args.path_root, args.output_dir, args.test_size)
+    prepare_node21(args.path_root, args.output_dir, args.test_size, use_symlink=args.symlink)
 
 
 if __name__ == "__main__":

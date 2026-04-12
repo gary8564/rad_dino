@@ -15,7 +15,7 @@ init_logging()
 logger = logging.getLogger(__name__)
 
 # Supported image file extensions for SimpleITK loading
-SUPPORTED_EXTENSIONS = ('.dcm', '.dicom', '.png', '.jpg', '.jpeg', '.mha', '.mhd')
+SUPPORTED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.dcm', '.dicom', '.mha', '.mhd')
 
 
 def load_image_from_path(img_path: str) -> Image.Image:
@@ -234,54 +234,3 @@ class RadImageClassificationDataset(Dataset):
             pil_images.append(view_pil)
         
         return pil_images
-    
-
-if __name__ == "__main__":
-    path_root = "/hpcwork/rwth1833/datasets/preprocessed/RSNA-Pneumonia"
-    ds_train = RadImageClassificationDataset(path_root, "train", "binary", model_name="rad-dino")
-    ds_test = RadImageClassificationDataset(path_root, "test", "binary", model_name="rad-dino")
-    print("RSNA-Pneumonia...")
-    print(f"Number of training data: {len(ds_train.sample_ids)}")
-    print(f"Number of test data: {len(ds_test.sample_ids)}")
-    
-    # path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-CXR"
-    # class_labels = ["Lung Opacity", "Cardiomegaly", "Pleural thickening", "Aortic enlargement", "Pleural effusion", "Pulmonary fibrosis", "Tuberculosis", "No finding"]
-    # ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", model_name="rad-dino")
-    # ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", model_name="rad-dino")
-    # print("VinDr-CXR...")
-    # assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
-    # print(f"Number of training data: {len(ds_train.sample_ids)}")
-    # print(f"Number of test data: {len(ds_test.sample_ids)}")
-    
-    # path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/findings/multi_view"
-    # class_labels = ['Architectural Distortion', 'Asymmetry', 'Mass', 'No Finding', 'Skin Thickening', 'Suspicious Calcification', 'Suspicious Lymph Node']
-    # ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", multi_view=True, model_name="rad-dino")
-    # ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", multi_view=True, model_name="rad-dino")
-    # print("VinDr-Mammo...")
-    # assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
-    # print(f"Number of training data: {len(ds_train.sample_ids)}")
-    # print(f"Number of test data: {len(ds_test.sample_ids)}")
-    
-    # path_root = "/hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads/multi_view"
-    # ds_train = RadImageClassificationDataset(path_root, "train", "multiclass", multi_view=True, model_name="rad-dino")
-    # ds_test = RadImageClassificationDataset(path_root, "test", "multiclass", multi_view=True, model_name="rad-dino")
-    # print("VinDr-Mammo BIRADS (Multi-view)...")
-    # print(f"Number of training studies: {len(ds_train.sample_ids)}")
-    # print(f"Number of test studies: {len(ds_test.sample_ids)}")
-    # print(f"Labels: {set(ds_train.labels)}")
-    
-    # path_root = "/hpcwork/rwth1833/datasets/preprocessed/TAIX-Ray"
-    # class_labels = ["Cardiomegaly", "Pulmonary congestion", "Pleural effusion", "Pulmonary opacities", "Atelectasis"]
-    # ds_train = RadImageClassificationDataset(path_root, "train", "multilabel", model_name="rad-dino")
-    # ds_test = RadImageClassificationDataset(path_root, "test", "multilabel", model_name="rad-dino")
-    # print("TAIX-Ray...")
-    # assert set(ds_train.labels) == set(class_labels), f"Class labels do not match: {set(ds_train.labels)} != {set(class_labels)}"
-    # print(f"Number of training data: {len(ds_train.sample_ids)}")
-    # print(f"Number of test data: {len(ds_test.sample_ids)}")
-    
-    path_root = "/hpcwork/rwth1833/datasets/preprocessed/NODE21"
-    ds_train = RadImageClassificationDataset(path_root, "train", "binary", model_name="rad-dino")
-    ds_test = RadImageClassificationDataset(path_root, "test", "binary", model_name="rad-dino")
-    print("NODE21...")
-    print(f"Number of training data: {len(ds_train.sample_ids)}")
-    print(f"Number of test data: {len(ds_test.sample_ids)}")

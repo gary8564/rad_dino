@@ -18,7 +18,7 @@ from rad_dino.data.data_loader import create_test_loader
 from rad_dino.data.dataset import RadImageClassificationDataset
 from rad_dino.data.label_mapping import class_labels_mapping
 from rad_dino.eval.evaluation_processor import EvaluationProcessor
-from rad_dino.models.ark import ArkClassifier, load_prtrained_ark_model
+from rad_dino.models.ark import ArkClassifier, load_pretrained_ark_model
 from rad_dino.models.base import BaseClassifier
 from rad_dino.models.biomedclip import BiomedCLIPClassifier, load_biomedclip_model
 from rad_dino.models.dino import DinoClassifier
@@ -27,24 +27,12 @@ from rad_dino.models.medimageinsight import (
     load_medimageinsight_model,
 )
 from rad_dino.models.siglip import MedSigClassifier
-from rad_dino.utils.config_utils import setup_configs
+from rad_dino.utils.config_utils import setup_configs, MODEL_REPOS
 from rad_dino.utils.data_utils import collate_fn
 from rad_dino.utils.model_loader import load_pretrained_model
 from rad_dino.utils.transforms import get_transforms
 
 logger = logging.getLogger(__name__)
-
-MODEL_REPOS = {
-    "rad-dino": "microsoft/rad-dino",
-    "dinov2-base": "facebook/dinov2-base",
-    "dinov2-small": "facebook/dinov2-small",
-    "dinov2-large": "facebook/dinov2-large",
-    "dinov3-small-plus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
-    "dinov3-base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
-    "dinov3-large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-    "medsiglip": "google/medsiglip-448",
-    "ark": "microsoft/swin-large-patch4-window12-384-in22k",
-}
 
 CURR_DIR = os.path.dirname(os.path.realpath(__file__))
 DEFAULT_MEDIMAGEINSIGHT_PATH = os.path.normpath(
@@ -209,14 +197,13 @@ def build_backbone_model(args, device: torch.device) -> BaseClassifier:
             raise ValueError(
                 "Ark requires --pretrained-ark-path for the pre-trained checkpoint."
             )
-        backbone = load_prtrained_ark_model(
+        backbone = load_pretrained_ark_model(
             checkpoint_path=args.pretrained_ark_path,
             num_classes_list=[14, 14, 14, 3, 6, 1],
             img_size=768, patch_size=4, window_size=12,
             embed_dim=192, depths=(2, 2, 18, 2), num_heads=(6, 12, 24, 48),
             projector_features=1376, use_mlp=False,
-            return_attention=False, grad_checkpointing=False,
-            device=device,
+            grad_checkpointing=False, device=device,
         )
         model = ArkClassifier(
             backbone, num_classes=1, use_backbone_projector=True, **mv_kwargs
@@ -249,7 +236,7 @@ def add_args(parser) -> None:
     parser.add_argument(
         "--data", type=str, required=True,
         choices=[
-            "TBX11", "SIIM-ACR",
+            "TBX11K", "SIIM-ACR",
             "VinDr-Mammo", "NODE21"
         ],
         help="Dataset to evaluate on. Only binary and multiclass are supported "
@@ -343,7 +330,8 @@ def setup_data_and_features(args, accelerator: Accelerator, model: BaseClassifie
         num_classes = 2
         class_labels = None
     else:
-        raw_class_labels = list(set(test_ds.labels))
+        # Keep deterministic class-index order aligned with numeric dataset labels.
+        raw_class_labels = sorted(set(test_ds.labels))
         class_labels = class_labels_mapping(args.data, raw_class_labels)
         num_classes = len(class_labels)
 

@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from rad_dino.loggings.setup import init_logging
 
@@ -73,10 +73,6 @@ class BaseClassifier(nn.Module):
 
         # Strategy dispatch dictionaries for branch-free forward
         self._init_strategy_dictionaries(view_fusion_type)
-
-    # ------------------------------------------------------------------
-    # Initialisation helpers
-    # ------------------------------------------------------------------
 
     def _init_classification_head(self):
         """Create the linear classification head ``self.classifier``."""
@@ -148,10 +144,6 @@ class BaseClassifier(nn.Module):
             "mlp_adapter": self._mlp_adapter_fusion,
         }
 
-    # ------------------------------------------------------------------
-    # Input reshaping strategies
-    # ------------------------------------------------------------------
-
     def _single_view_input_reshape(
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, int]:
@@ -170,10 +162,6 @@ class BaseClassifier(nn.Module):
         x = x.reshape(batch_size * num_views, *x.shape[2:])
         return x, num_views
 
-    # ------------------------------------------------------------------
-    # Normalization strategies
-    # ------------------------------------------------------------------
-
     def _single_view_normalization(
         self, features: torch.Tensor
     ) -> torch.Tensor:
@@ -185,10 +173,6 @@ class BaseClassifier(nn.Module):
     ) -> torch.Tensor:
         """Apply LayerNorm for multi-view fused ``[B, D]`` features."""
         return self.layer_norm(features)
-
-    # ------------------------------------------------------------------
-    # View fusion strategies
-    # ------------------------------------------------------------------
 
     def _single_view_fusion(
         self, features: torch.Tensor, batch_size: int, num_views: int
@@ -234,14 +218,10 @@ class BaseClassifier(nn.Module):
             adapted.view(batch_size, num_views * self.embed_dim)
         )
 
-    # ------------------------------------------------------------------
-    # Abstract feature extraction
-    # ------------------------------------------------------------------
-
     @abstractmethod
     def extract_features(
         self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, any]:
+    ) -> tuple[torch.Tensor, Any]:
         """
         Extract features from the backbone.
 
@@ -256,10 +236,6 @@ class BaseClassifier(nn.Module):
             - ``attentions``: Architecture-specific attention maps, or ``None``.
         """
         ...
-
-    # ------------------------------------------------------------------
-    # Shared forward pass
-    # ------------------------------------------------------------------
 
     def forward(self, x: torch.Tensor):
         """

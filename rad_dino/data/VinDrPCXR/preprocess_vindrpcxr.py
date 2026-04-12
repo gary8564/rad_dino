@@ -4,7 +4,7 @@ import pandas as pd
 import logging
 from typing import Union
 from rad_dino.loggings.setup import init_logging
-from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
+from rad_dino.utils.preprocessing_utils import copy_files_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ def parse_args():
     parser.add_argument("--classes", nargs="+", default=None,
                         help="Specify an integer k for top-k classes or a list of class names to keep. "
                              "If not provided, all 15 classes are used.")
+    parser.add_argument("--symlink", action="store_true", help="Create symlinks instead of copying source images.")
     return parser.parse_args()
 
 
@@ -48,7 +49,8 @@ def filter_classes(df: pd.DataFrame,
 
 
 def prepare_vindrpcxr(path_root: str, output_dir: str,
-                      class_labels: Union[int, str, list[str], None]):
+                      class_labels: Union[int, str, list[str], None],
+                      use_symlink: bool = False):
     """
     Preprocess the VinDr-PCXR dataset for multilabel classification.
 
@@ -59,12 +61,12 @@ def prepare_vindrpcxr(path_root: str, output_dir: str,
     1. Loads the image_labels_{split}.csv files.
     2. Optionally filters to a subset of classes.
     3. Saves {split}_labels.csv with image_id as index and label columns only.
-    4. Creates symlinks from source .dicom files into images/{split}/.
+    4. Copies or symlinks source .dicom files into images/{split}/.
 
     Args:
         path_root: Root directory of the VinDr-PCXR dataset containing train/, test/,
                    image_labels_train.csv, and image_labels_test.csv.
-        output_dir: Directory to write preprocessed label CSVs and image symlinks.
+        output_dir: Directory to write preprocessed label CSVs and images.
         class_labels: None (all 15 classes), an integer k (top-k), a single class
                       name string, or a list of class names.
     """
@@ -137,19 +139,20 @@ def prepare_vindrpcxr(path_root: str, output_dir: str,
     df_test.to_csv(os.path.join(output_dir, "test_labels.csv"))
     logger.info(f"Saved train_labels.csv ({len(df_train)} rows) and test_labels.csv ({len(df_test)} rows)")
 
-    # 5) SYMLINK DICOM IMAGES
+    # 5) COPY DICOM IMAGES
     for split, df in [("train", df_train), ("test", df_test)]:
         src_folder = os.path.join(path_root, split)
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
 
-        symlink_pairs = [
+        file_pairs = [
             (os.path.join(src_folder, f"{image_id}.dicom"),
              os.path.join(dst_folder, f"{image_id}.dcm"))
             for image_id in df.index
         ]
-        create_symlinks_parallel(symlink_pairs)
-        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
+        copy_files_parallel(file_pairs, use_symlink=use_symlink)
+        action = "Symlinked" if use_symlink else "Copied"
+        logger.info(f"{action} {len(file_pairs)} images to {dst_folder}")
 
     logger.info(f"Preprocessing VinDr-PCXR complete! Output saved to {output_dir}")
 
@@ -166,7 +169,7 @@ def main():
         except ValueError:
             class_labels = class_labels[0]
 
-    prepare_vindrpcxr(args.path_root, args.output_dir, class_labels)
+    prepare_vindrpcxr(args.path_root, args.output_dir, class_labels, use_symlink=args.symlink)
 
 
 if __name__ == "__main__":

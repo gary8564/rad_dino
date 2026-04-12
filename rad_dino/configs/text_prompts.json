@@ -80,5 +80,22 @@
             "a normal spine x-ray image",
             "an abnormal spine x-ray image"
         ]
+    },
+    "NODE21": {
+        "binary": [
+            "a chest x-ray image with no pulmonary nodules",
+            "a chest x-ray image with pulmonary nodules"
+        ]
+    },
+    "TBX11K": {
+        "multiclass": [
+            "a chest x-ray image of healthy lungs with no disease",
+            "a chest x-ray image showing signs of non-tuberculosis lung disease",
+            "a chest x-ray image showing signs of tuberculosis"
+        ],
+        "binary": [
+            "a chest x-ray image of healthy lungs with no disease",
+            "a chest x-ray image showing signs of tuberculosis"
+        ]
     }
 }

@@ -1,3 +1,5 @@
+"""BiomedCLIP classifier using the open_clip ViT-B/16 backbone."""
+
 import torch
 import logging
 from typing import Optional, List
@@ -43,7 +45,7 @@ def get_biomedclip_tokenizer():
 
 # Attention extraction helper function for open-clip
 def _hook_attn(attn_module, storage: list):
-    def forward(x):
+    def forward(x, **kwargs):
         B, N, C = x.shape
         qkv = attn_module.qkv(x).reshape(
             B, N, 3, attn_module.num_heads, attn_module.head_dim
@@ -138,7 +140,7 @@ class BiomedCLIPClassifier(BaseClassifier):
         """Stack per-layer attention tensors into [num_layers, B, H, N, N]."""
         if not self._attn_storage:
             return None
-        return torch.stack(self._attn_storage, dim=0)
+        return torch.stack([a.cpu() for a in self._attn_storage], dim=0)
 
     # Feature extraction
     def extract_features(self, x: torch.Tensor):

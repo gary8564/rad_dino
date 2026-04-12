@@ -5,9 +5,24 @@ from typing import Dict, Any
 from pathlib import Path
 from rad_dino.configs.config import *
 from rad_dino.loggings.setup import init_logging
+
 init_logging()
 logger = logging.getLogger(__name__)
+
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+
+MODEL_REPOS: Dict[str, str] = {
+    "rad-dino": "microsoft/rad-dino",
+    "dinov2-base": "facebook/dinov2-base",
+    "dinov2-small": "facebook/dinov2-small",
+    "dinov2-large": "facebook/dinov2-large",
+    "dinov2-large-reg": "facebook/dinov2-with-registers-large",
+    "dinov3-small-plus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
+    "dinov3-base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    "dinov3-large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+    "medsiglip": "google/medsiglip-448",
+    "ark": "microsoft/swin-large-patch4-window12-384-in22k",
+}
 
 def setup_configs(dataset_name: str, task: str) -> tuple[DataConfig, TrainConfig]:
     # Configuration settings

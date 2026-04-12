@@ -10,8 +10,6 @@ from accelerate import Accelerator
 from rad_dino.train.trainer import Trainer
 from rad_dino.utils.data_utils import collate_fn
 
-# --- Test Helpers ---
-
 class DummyDataset(Dataset):
     def __init__(self, n_samples=10, n_classes=2, multi_view=False):
         self.n_samples = n_samples
@@ -58,7 +56,7 @@ def get_trainer(model=None, args=None, accelerator=None):
     args = args or MagicMock(
         task="multilabel", data="VinDr-CXR", model="rad_dino",
         unfreeze_backbone=False, progressive_unfreeze=False, resume=False,
-        output_dir=tempfile.mkdtemp(dir="/tmp"))
+        wandb=False, output_dir=tempfile.mkdtemp(dir="/tmp"))
     
     train_config = MagicMock()
     train_config.optim.base_lr = 0.001
@@ -84,9 +82,6 @@ def get_trainer(model=None, args=None, accelerator=None):
         accelerator=accelerator, checkpoint_dir=tempfile.mkdtemp(dir="/tmp"), args=args
     )
 
-# --- Test Classes ---
-
-@patch('rad_dino.train.trainer.wandb', MagicMock())
 class TestTrainer(unittest.TestCase):
     """Test the Trainer class functionality."""
     
@@ -185,7 +180,7 @@ class TestTrainer(unittest.TestCase):
         }
         mock_get_layer_term.return_value = 'layers'
         
-        args = MagicMock(unfreeze_backbone=True, progressive_unfreeze=True, resume=False, output_dir=tempfile.mkdtemp())
+        args = MagicMock(unfreeze_backbone=True, progressive_unfreeze=True, resume=False, wandb=False, output_dir=tempfile.mkdtemp())
         trainer = get_trainer(model=DummyModel(), args=args)
         model = DummyModel()
         
@@ -224,6 +219,7 @@ class TestTrainer(unittest.TestCase):
             progressive_unfreeze=False, 
             unfreeze_num_layers=2,
             resume=False, 
+            wandb=False,
             output_dir=tempfile.mkdtemp()
         )
         trainer = get_trainer(model=DummyModel(), args=args)
@@ -239,6 +235,7 @@ class TestTrainer(unittest.TestCase):
             progressive_unfreeze=False, 
             unfreeze_num_layers=None,
             resume=False, 
+            wandb=False,
             output_dir=tempfile.mkdtemp()
         )
         trainer = get_trainer(model=DummyModel(), args=args)
@@ -282,7 +279,6 @@ class TestTrainer(unittest.TestCase):
         # Should have added a new parameter group for backbone
         self.assertGreaterEqual(len(optimizer.param_groups), initial_groups)
 
-@patch('rad_dino.train.trainer.wandb', MagicMock())
 class TestNewModels(unittest.TestCase):
     """Test that new models work with the trainer."""
     
@@ -290,7 +286,7 @@ class TestNewModels(unittest.TestCase):
         self.args = MagicMock(
             task="multilabel", data="VinDr-CXR", model="rad_dino",
             unfreeze_backbone=False, progressive_unfreeze=False, resume=False,
-            output_dir=tempfile.mkdtemp(dir="/tmp")
+            wandb=False, output_dir=tempfile.mkdtemp(dir="/tmp")
         )
         
     def tearDown(self):

@@ -1,7 +1,7 @@
 import os
 import torch
 from transformers import AutoModel
-from typing import Tuple, Any
+from typing import Optional, Tuple, Any
 from rad_dino.models.dino import DinoClassifier
 from rad_dino.models.siglip import MedSigClassifier
 from rad_dino.models.ark import ArkClassifier, SwinTransformer
@@ -62,6 +62,29 @@ def _migrate_state_dict_keys(state_dict: dict) -> dict:
     return migrated
 
 
+def _infer_legacy_view_fusion_type(state_dict: dict) -> str:
+    """Infer the view fusion type used by a legacy checkpoint from its state_dict keys.
+
+    Legacy checkpoints may not store ``view_fusion_type`` in checkpoint metadata.
+    We detect the original fusion architecture from telltale keys, then default
+    to ``"mean"`` so that old models can run through the current inference
+    pipeline with simple average pooling (no learned fusion parameters needed).
+    """
+    if "view_scores" in state_dict:
+        logger.info(
+            "Legacy multi-view checkpoint was trained with weighted_mean fusion "
+            "(view_scores found). Falling back to mean pooling for inference."
+        )
+    elif any(k.startswith("view_adapters.") for k in state_dict):
+        logger.info(
+            "Legacy multi-view checkpoint was trained with mlp_adapter fusion "
+            "(view_adapters found). Falling back to mean pooling for inference."
+        )
+    else:
+        logger.info("Legacy multi-view checkpoint: defaulting view_fusion_type to 'mean'.")
+    return "mean"
+
+
 def _load_best_dino_model(checkpoint_dir: str, 
                      backbone: AutoModel, 
                      num_classes: int, 
@@ -71,12 +94,18 @@ def _load_best_dino_model(checkpoint_dir: str,
     """Load PyTorch model from checkpoint"""
     ckpt = torch.load(_resolve_checkpoint_path(checkpoint_dir), map_location=accelerator.device)
     
+    # Resolve legacy state_dict keys
+    state_dict = _migrate_state_dict_keys(ckpt["model_state"])
+
     # Get multi-view parameters from checkpoint or use defaults
     num_views = ckpt.get("num_views", 4)
-    view_fusion_type = ckpt.get("view_fusion_type", "mean")
+    view_fusion_type = ckpt.get("view_fusion_type")
     adapter_dim = ckpt.get("adapter_dim")
     view_fusion_hidden_dim = ckpt.get("view_fusion_hidden_dim")
-    
+
+    if multi_view and view_fusion_type is None:
+        view_fusion_type = _infer_legacy_view_fusion_type(state_dict)
+
     model = DinoClassifier(backbone, 
                            num_classes=num_classes, 
                            multi_view=multi_view,
@@ -85,20 +114,19 @@ def _load_best_dino_model(checkpoint_dir: str,
                            adapter_dim=adapter_dim,
                            view_fusion_hidden_dim=view_fusion_hidden_dim,
                            return_attentions=return_attentions)
-    state_dict = _migrate_state_dict_keys(ckpt["model_state"])
-    model.load_state_dict(state_dict)
+    
+    model.load_state_dict(state_dict, strict=False)
     model = model.to(accelerator.device)
     return model
 
 
-def _load_best_ark_model(checkpoint_dir: str, 
-                         num_classes: int, 
-                         accelerator: Accelerator, 
-                         multi_view: bool = False, 
-                         return_attention: bool = False) -> ArkClassifier:
+def _load_best_ark_model(checkpoint_dir: str,
+                         num_classes: int,
+                         accelerator: Accelerator,
+                         multi_view: bool = False) -> ArkClassifier:
     """Load Ark PyTorch model from checkpoint"""
     ckpt = torch.load(_resolve_checkpoint_path(checkpoint_dir), map_location=accelerator.device)
-    
+
     # Get multi-view parameters from checkpoint or use defaults
     num_views = ckpt.get("num_views")
     view_fusion_type = ckpt.get("view_fusion_type")
@@ -108,6 +136,9 @@ def _load_best_ark_model(checkpoint_dir: str,
     state_dict = ckpt.get("model_state")
     if not isinstance(state_dict, dict) or not state_dict:
         raise RuntimeError("Invalid checkpoint: 'model_state' is missing or empty")
+
+    if multi_view and view_fusion_type is None:
+        view_fusion_type = _infer_legacy_view_fusion_type(state_dict)
 
     backbone = SwinTransformer(
         num_classes_list=[num_classes],
@@ -119,7 +150,6 @@ def _load_best_ark_model(checkpoint_dir: str,
         num_heads=(6, 12, 24, 48),
         projector_features=1376,
         use_mlp=False,
-        return_attention=return_attention,
         grad_checkpointing=False,
     )
     
@@ -174,12 +204,18 @@ def _load_best_medsig_model(checkpoint_dir: str,
     """Load MedSig PyTorch model from checkpoint"""
     ckpt = torch.load(_resolve_checkpoint_path(checkpoint_dir), map_location=accelerator.device)
     
+    # Resolve legacy state_dict keys first
+    state_dict = _migrate_state_dict_keys(ckpt["model_state"])
+
     # Get multi-view parameters from checkpoint or use defaults
     num_views = ckpt.get("num_views")
     view_fusion_type = ckpt.get("view_fusion_type")
     adapter_dim = ckpt.get("adapter_dim")
     view_fusion_hidden_dim = ckpt.get("view_fusion_hidden_dim")
-    
+
+    if multi_view and view_fusion_type is None:
+        view_fusion_type = _infer_legacy_view_fusion_type(state_dict)
+
     model = MedSigClassifier(backbone, 
                            num_classes=num_classes, 
                            multi_view=multi_view,
@@ -188,8 +224,7 @@ def _load_best_medsig_model(checkpoint_dir: str,
                            adapter_dim=adapter_dim,
                            view_fusion_hidden_dim=view_fusion_hidden_dim,
                            return_attentions=return_attentions)
-    state_dict = _migrate_state_dict_keys(ckpt["model_state"])
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     model = model.to(accelerator.device)
     return model
 
@@ -218,6 +253,9 @@ def _load_best_medimageinsight_model(checkpoint_dir: str,
     view_fusion_type = ckpt.get("view_fusion_type")
     adapter_dim = ckpt.get("adapter_dim")
     view_fusion_hidden_dim = ckpt.get("view_fusion_hidden_dim")
+
+    if multi_view and view_fusion_type is None:
+        view_fusion_type = _infer_legacy_view_fusion_type(ckpt.get("model_state", {}))
 
     # Rebuild the UniCL backbone from the cloned repo
     backbone = load_medimageinsight_model(medimageinsight_path, device=str(accelerator.device))
@@ -262,6 +300,9 @@ def _load_best_biomedclip_model(checkpoint_dir: str,
     adapter_dim = ckpt.get("adapter_dim")
     view_fusion_hidden_dim = ckpt.get("view_fusion_hidden_dim")
 
+    if multi_view and view_fusion_type is None:
+        view_fusion_type = _infer_legacy_view_fusion_type(ckpt.get("model_state", {}))
+
     # Rebuild the open_clip backbone from HF hub
     backbone, _ = load_biomedclip_model(device=str(accelerator.device))
 
@@ -281,11 +322,15 @@ def _load_best_biomedclip_model(checkpoint_dir: str,
 
 
 # Load pretrained backbone model
-def load_pretrained_model(model_repo):
-    return AutoModel.from_pretrained(model_repo)
+def load_pretrained_model(model_repo, attn_implementation=None):
+    kwargs = {}
+    if attn_implementation is not None:
+        kwargs["attn_implementation"] = attn_implementation
+    return AutoModel.from_pretrained(model_repo, **kwargs)
 
 
-def _build_backbone(model_name: str, model_repo: str) -> Tuple[Any, Any]:
+def _build_backbone(model_name: str, model_repo: str,
+                    show_attention: bool = False) -> Tuple[Any, Any]:
     """Return (backbone, backbone_config) for a given architecture name.
 
     For Ark/MedImageInsight, returns (None, mock_config) since Ark uses its own loader.
@@ -300,7 +345,8 @@ def _build_backbone(model_name: str, model_repo: str) -> Tuple[Any, Any]:
     if model_name == "biomedclip":
         mock_cfg = type('Config', (), {'image_size': 224, 'patch_size': 16})()
         return None, mock_cfg
-    backbone = load_pretrained_model(model_repo)
+    attn_impl = "eager" if show_attention else None
+    backbone = load_pretrained_model(model_repo, attn_implementation=attn_impl)
     return backbone, backbone.config
 
 
@@ -312,10 +358,10 @@ def _load_pt_model(checkpoint_dir: str,
                    multi_view: bool,
                    backbone_config: Any,
                    show_attention: bool,
-                   medimageinsight_path: str = None) -> ModelWrapper:
+                   medimageinsight_path: Optional[str] = None) -> ModelWrapper:
     """Load a PyTorch classifier and return a ModelWrapper."""
     if model_name == "ark":
-        model = _load_best_ark_model(checkpoint_dir, num_classes, accelerator, multi_view, return_attention=show_attention)
+        model = _load_best_ark_model(checkpoint_dir, num_classes, accelerator, multi_view)
     elif model_name == "medimageinsight":
         if medimageinsight_path is None:
             raise ValueError("medimageinsight_path is required to load MedImageInsight checkpoints.")
@@ -342,11 +388,12 @@ def load_model(checkpoint_dir: str,
                accelerator: Accelerator, 
                show_attention: bool,
                multi_view: bool = False,
-               medimageinsight_path: str = None) -> ModelWrapper:
+               medimageinsight_path: Optional[str] = None) -> ModelWrapper:
     """Load model from checkpoint."""
     
     # Handle different architectures
-    backbone, backbone_config = _build_backbone(model_name, model_repo)
+    backbone, backbone_config = _build_backbone(model_name, model_repo,
+                                                show_attention=show_attention)
     
     return _load_pt_model(
         checkpoint_dir, model_name, backbone, num_classes, accelerator,

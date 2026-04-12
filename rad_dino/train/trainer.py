@@ -1,3 +1,5 @@
+"""Trainer class implementing the k-fold / single-split training loop with early stopping."""
+
 import os
 import copy
 import logging
@@ -5,7 +7,6 @@ import math
 import numpy as np
 import torch
 from tqdm.auto import tqdm
-import wandb
 from transformers import get_cosine_schedule_with_warmup
 from rad_dino.train.train_utils import EarlyStopping
 from rad_dino.utils.cross_validation import KFold
@@ -24,7 +25,14 @@ class Trainer:
         self.accelerator = accelerator
         self.checkpoint_dir = checkpoint_dir
         self.args = args
-        
+
+    def _log_wandb(self, metrics: dict):
+        """Log metrics to Weights & Biases if enabled via --wandb flag."""
+        if not getattr(self.args, "wandb", False):
+            return
+        import wandb
+        wandb.log(metrics)
+
     def _freeze_backbone(self, model):
         """Freeze the backbone of the model."""
         for name, param in model.backbone.named_parameters():
@@ -178,9 +186,7 @@ class Trainer:
         n_samples = torch.tensor(0, device=self.accelerator.device)
         # Accumulate predictions and labels for epoch-level metrics
         preds, trues = [], []
-        # Enable anomaly detection for debugging NaN issues
-        # torch.autograd.set_detect_anomaly(True)
-        
+
         for i, data in enumerate(tqdm(data_loader, desc=f"Epoch {curr_epoch + 1}")):
             # Backpropagate the loss and accumulate gradients
             with self.accelerator.accumulate(model):
@@ -213,7 +219,7 @@ class Trainer:
             if i % 10 == 0 and self.accelerator.is_main_process:
                 current_lr = scheduler.get_last_lr()[0] if scheduler else self.train_config.optim.base_lr
                 global_step = curr_epoch * n_steps_per_epoch + update_steps
-                wandb.log({
+                self._log_wandb({
                     f"train/{log_prefix}loss_step": loss.item(),
                     f"trainer/{log_prefix}global_step": global_step,
                     f"{log_prefix}lr": current_lr
@@ -290,10 +296,10 @@ class Trainer:
         # Create fresh model copy
         model = copy.deepcopy(base_model)
         
-        # In-place torch.compile
+        # torch.compile
         if getattr(self.args, "compile", False):
-            logger.info("Compiling model with torch.compile (in-place, backend='inductor')")
-            model.compile(backend="inductor")
+            logger.info("Compiling model with torch.compile (backend='inductor')")
+            model = torch.compile(model, backend="inductor")
         
         # Apply initial unfreezing strategy
         self._apply_unfreezing_strategy(model, current_epoch=0)
@@ -417,19 +423,16 @@ class Trainer:
                         self._apply_unfreezing_strategy(kfold.model, current_epoch=epoch)
                         self._update_optimizer_parameter_groups(kfold.optimizer, kfold.model)
                     
-                    # Log unfreezing progress to wandb
                     model_info = self._get_model_layer_info(kfold.model)
                     layer_pattern = model_info['layer_pattern']
                     total_layers = model_info['total_layers']
                     
-                    # Count unfrozen layers
                     unfrozen_layers = sum(1 for name, param in kfold.model.backbone.named_parameters() 
                                         if any(pattern.format(i) in name for i in range(total_layers) 
                                               for pattern in [layer_pattern]) and param.requires_grad)
                     
-                    #  wandb logs
                     if self.accelerator.is_main_process:
-                        wandb.log({
+                        self._log_wandb({
                             f"{log_prefix}trainer/unfrozen_layers": unfrozen_layers,
                             f"{log_prefix}trainer/total_layers": total_layers,
                             f"{log_prefix}trainer/unfreeze_ratio": unfrozen_layers / total_layers,
@@ -443,17 +446,16 @@ class Trainer:
                     kfold.lr_scheduler, log_prefix
                 )
                 if self.accelerator.is_main_process:
-                    print(f'{log_prefix} Epoch {epoch+1} \t\t Train loss: {train_loss:.3f} \t\t Top1 Acc: {train_acc:.3f}')
+                    logger.info(f'{log_prefix} Epoch {epoch+1} \t\t Train loss: {train_loss:.3f} \t\t Top1 Acc: {train_acc:.3f}')
                 
                 val_loss, val_acc, val_f1, val_ap, val_auroc = self.eval_per_epoch(
                     kfold.model, kfold.val_loader
                 )
                 if self.accelerator.is_main_process:
-                    print(f'{log_prefix} Epoch {epoch+1} \t\t Val loss {val_loss:.3f} \t\t AUPRC {val_ap:.3f}')
+                    logger.info(f'{log_prefix} Epoch {epoch+1} \t\t Val loss {val_loss:.3f} \t\t AUPRC {val_ap:.3f}')
                 
-                # Log metrics
                 if self.accelerator.is_main_process:
-                    wandb.log({
+                    self._log_wandb({
                         f"{log_prefix}train/loss_per_epoch": train_loss,
                         f"{log_prefix}train/ACC": train_acc,
                         f"{log_prefix}train/AUROC": train_auroc,
@@ -565,7 +567,7 @@ class Trainer:
             avg_ap = np.mean([res["val_ap"] for res in kfold_results])
             std_ap = np.std([res["val_ap"] for res in kfold_results])
             logger.info(f"K-fold results: Mean AUPRC={avg_ap:.4f} ± {std_ap:.4f}")
-            wandb.log({"kfold/mean_ap": avg_ap, "kfold/std_ap": std_ap})
+            self._log_wandb({"kfold/mean_ap": avg_ap, "kfold/std_ap": std_ap})
         
         if best_model_global is None and self.accelerator.is_main_process:
             if is_kfold:

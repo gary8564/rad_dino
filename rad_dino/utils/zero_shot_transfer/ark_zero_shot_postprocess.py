@@ -91,8 +91,9 @@ def aggregate_targeted_pred_probs(
     device = pred_probs.device
     if task_type == "binary":
         indices = next(iter(target_to_pretrained_label_indices.values()), [])
+        positive_label = next(iter(target_to_pretrained_label_indices.keys()), None)
         if not indices:
-            raise ValueError(f"No pretrained Ark disease labels found for the positive label: {key}")
+            raise ValueError(f"No pretrained Ark disease labels found for the positive label: {positive_label}")
         return pred_probs[:, indices].mean(dim=1, keepdim=True)
 
     assert downstream_target_labels is not None, "`downstream_target_labels` must be provided if the downstream classification task is not a binary case."
@@ -105,6 +106,4 @@ def aggregate_targeted_pred_probs(
             continue
         out[:, idx] = pred_probs[:, indices].mean(dim=1)
     return out
-
-
 

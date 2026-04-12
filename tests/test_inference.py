@@ -108,7 +108,6 @@ class TestInference(unittest.TestCase):
             output_path="test/output",
             show_gradcam=True,
             show_attention=True,
-            show_lrp=True,
             show_feature_maps=True,
         )
         output_paths = create_output_directories(self.temp_dir, self.mock_accelerator, config)
@@ -119,7 +118,6 @@ class TestInference(unittest.TestCase):
         self.assertEqual(output_paths.table, f"{self.temp_dir}/table")
         self.assertEqual(output_paths.gradcam, f"{self.temp_dir}/gradcam")
         self.assertEqual(output_paths.attention, f"{self.temp_dir}/attention")
-        self.assertEqual(output_paths.lrp, f"{self.temp_dir}/lrp")
         self.assertEqual(output_paths.feature_maps, f"{self.temp_dir}/feature_maps")
         
         # Check that directories were created
@@ -127,7 +125,6 @@ class TestInference(unittest.TestCase):
         self.assertTrue(os.path.exists(f"{self.temp_dir}/table"))
         self.assertTrue(os.path.exists(f"{self.temp_dir}/gradcam"))
         self.assertTrue(os.path.exists(f"{self.temp_dir}/attention"))
-        self.assertTrue(os.path.exists(f"{self.temp_dir}/lrp"))
         self.assertTrue(os.path.exists(f"{self.temp_dir}/feature_maps"))
     
     def test_create_output_directories_no_visualizations(self):
@@ -147,7 +144,6 @@ class TestInference(unittest.TestCase):
         self.assertEqual(output_paths.table, f"{self.temp_dir}/table")
         self.assertIsNone(output_paths.gradcam)
         self.assertIsNone(output_paths.attention)
-        self.assertIsNone(output_paths.lrp)
         self.assertIsNone(output_paths.feature_maps)
         
         # Only figs and table should exist
@@ -155,11 +151,10 @@ class TestInference(unittest.TestCase):
         self.assertTrue(os.path.exists(f"{self.temp_dir}/table"))
         self.assertFalse(os.path.exists(f"{self.temp_dir}/gradcam"))
         self.assertFalse(os.path.exists(f"{self.temp_dir}/attention"))
-        self.assertFalse(os.path.exists(f"{self.temp_dir}/lrp"))
         self.assertFalse(os.path.exists(f"{self.temp_dir}/feature_maps"))
 
     def test_medimageinsight_disables_attention_flags(self):
-        """Test that validate_args disables attention/gradcam/lrp for medimageinsight"""
+        """Test that validate_args disables attention/rollout for medimageinsight"""
         config = InferenceConfig(
             task="binary",
             data="RSNA-Pneumonia",
@@ -170,13 +165,11 @@ class TestInference(unittest.TestCase):
             attention_threshold=0.5,
             save_heads="mean",
             show_gradcam=True,
-            show_lrp=True,
             compute_rollout=True,
         )
         validate_args(config)
         self.assertFalse(config.show_attention)
-        self.assertFalse(config.show_gradcam)
-        self.assertFalse(config.show_lrp)
+        self.assertTrue(config.show_gradcam)
         self.assertFalse(config.compute_rollout)
 
     def test_medimageinsight_feature_maps_not_disabled(self):

@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import torchvision.transforms.v2 as transforms
 from torch.utils.data import DataLoader, Subset
-from accelerate import Accelerator
 from sklearn.model_selection import StratifiedKFold
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from typing import Optional

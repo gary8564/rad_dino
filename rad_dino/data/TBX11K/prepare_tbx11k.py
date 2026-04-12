@@ -3,7 +3,7 @@ import argparse
 import pandas as pd
 import logging
 from rad_dino.loggings.setup import init_logging
-from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
+from rad_dino.utils.preprocessing_utils import copy_files_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ def parse_args():
                         help="Path to the preprocessed output directory")
     parser.add_argument("--task", type=str, default="binary", choices=["binary", "multiclass"],
                         help="Classification task: 'binary' (TB vs Non-TB) or 'multiclass' (Healthy vs Sick vs TB)")
+    parser.add_argument("--symlink", action="store_true", help="Create symlinks instead of copying source images.")
     return parser.parse_args()
 
 
@@ -42,7 +43,7 @@ def load_list_file(list_path: str) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def prepare_tbx11k(path_root: str, output_dir: str, task: str):
+def prepare_tbx11k(path_root: str, output_dir: str, task: str, use_symlink: bool = False):
     """
     Preprocess the TBX11K dataset for image-level classification.
 
@@ -97,15 +98,16 @@ def prepare_tbx11k(path_root: str, output_dir: str, task: str):
         df_labels.to_csv(label_csv, index=False)
         logger.info(f"Saved {label_csv} with {len(df_labels)} entries.")
 
-        # 5) SYMLINK IMAGES
+        # 5) COPY IMAGES
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
-        symlink_pairs = [
+        file_pairs = [
             (row["src_path"], os.path.join(dst_folder, f"{row['image_id']}.png"))
             for _, row in df.iterrows()
         ]
-        create_symlinks_parallel(symlink_pairs)
-        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
+        copy_files_parallel(file_pairs, use_symlink=use_symlink)
+        action = "Symlinked" if use_symlink else "Copied"
+        logger.info(f"{action} {len(file_pairs)} images to {dst_folder}")
 
     logger.info(f"Preprocessing TBX11K ({task}) complete! Output saved to {output_dir}")
 
@@ -113,7 +115,7 @@ def prepare_tbx11k(path_root: str, output_dir: str, task: str):
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    prepare_tbx11k(args.path_root, args.output_dir, args.task)
+    prepare_tbx11k(args.path_root, args.output_dir, args.task, use_symlink=args.symlink)
 
 
 if __name__ == "__main__":

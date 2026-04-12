@@ -43,7 +43,7 @@ class InferenceEngine:
         self.model.eval()
         logger.info(f"Running inference with PyTorch model (multi_view={self.multi_view})")
 
-    def run_inference(self, images: torch.Tensor, num_classes: int = None) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def run_inference(self, images: torch.Tensor, num_classes: Optional[int] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         # Validate input shapes
         _validate_input_shape(images, self.multi_view)
 
