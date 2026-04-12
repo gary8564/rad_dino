@@ -20,7 +20,7 @@ from rad_dino.models.medimageinsight import MedImageInsightClassifier, load_medi
 from rad_dino.models.siglip import MedSigClassifier
 from rad_dino.train.train_utils import get_criterion, get_eval_metrics
 from rad_dino.train.trainer import Trainer
-from rad_dino.utils.config_utils import setup_configs, MODEL_REPOS
+from rad_dino.utils.config_utils import setup_configs, MODEL_REPOS, validate_dataset
 from rad_dino.utils.loss_utils import get_class_weights
 from rad_dino.utils.model_loader import load_pretrained_model
 from rad_dino.utils.transforms import get_transforms
@@ -37,7 +37,7 @@ DEFAULT_MEDIMAGEINSIGHT_PATH = os.path.normpath(os.path.join(CURR_DIR, "..", "mo
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv2/DINOv3/MedSigLIP/ARK/BiomedCLIP linear probing", add_help=add_help)
     parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary'])
-    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray', 'NODE21', 'COVID-CXR', 'VinDr-SpineXR', 'VinDr-PCXR', 'TBX11K', 'SIIM-ACR'])
+    parser.add_argument('--data', type=str, required=True, help="Dataset name (must match a key in data_config.yaml)")
     parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov2-large-reg', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
     parser.add_argument(
@@ -333,6 +333,7 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
     return best_model
 
 def main(args):
+    validate_dataset(args.data)
     if args.task not in ["multilabel", "multiclass", "binary"]:
         raise NotImplementedError(f"Task {args.task} not supported.")
     if args.kfold is not None and args.kfold < 1:

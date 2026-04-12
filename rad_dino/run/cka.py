@@ -40,7 +40,7 @@ from rad_dino.eval.feature_extractor import (
     extract_features,
 )
 from rad_dino.loggings.setup import init_logging
-from rad_dino.utils.config_utils import setup_configs
+from rad_dino.utils.config_utils import setup_configs, validate_dataset
 from rad_dino.utils.model_loader import load_model
 from rad_dino.utils.transforms import get_transforms
 from rad_dino.utils.visualization.visualize_cka import (
@@ -75,11 +75,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--data", type=str, required=True,
-        choices=[
-            "TBX11K", "SIIM-ACR", "VinDr-Mammo", "NODE21",
-            "TAIX-Ray", "VinDr-CXR", "RSNA-Pneumonia",
-            "COVID-CXR", "VinDr-PCXR", "VinDr-SpineXR",
-        ],
+        help="Dataset name (must match a key in data_config.yaml)",
     )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument(
@@ -314,6 +310,7 @@ def run_crossmodel(args, accelerator: Accelerator) -> None:
 
 def main():
     args = get_args_parser().parse_args()
+    validate_dataset(args.data)
 
     accelerator = Accelerator(
         mixed_precision="fp16" if args.optimize_compute else "no"

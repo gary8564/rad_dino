@@ -17,7 +17,7 @@ from rad_dino.data.dataset import RadImageClassificationDataset
 from rad_dino.data.data_loader import create_test_loader
 from rad_dino.utils.transforms import get_transforms
 from rad_dino.configs.config import InferenceConfig, OutputPaths
-from rad_dino.utils.config_utils import setup_configs, MODEL_REPOS
+from rad_dino.utils.config_utils import setup_configs, MODEL_REPOS, validate_dataset
 from rad_dino.loggings.setup import init_logging
 from rad_dino.utils.model_loader import load_model
 from rad_dino.eval.inference_engine import InferenceEngine
@@ -44,8 +44,8 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--task', type=str, required=True, 
                        choices=['multilabel', 'multiclass', 'binary'])
-    parser.add_argument('--data', type=str, required=True, 
-                       choices=['VinDr-CXR', 'TAIX-Ray', 'RSNA-Pneumonia', 'VinDr-Mammo', 'NODE21', 'COVID-CXR', 'VinDr-PCXR', 'VinDr-SpineXR', 'TBX11K', 'SIIM-ACR'])
+    parser.add_argument('--data', type=str, required=True,
+                       help="Dataset name (must be the one specified as a key in data_config.yaml)")
     parser.add_argument('--model', type=str, required=True, 
                        choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov2-large-reg', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--model-path', required=True, type=str)
@@ -500,11 +500,10 @@ def run_inference(model_wrapper,
 
 def main():
     """Main function"""
-    # Parse arguments
     parser = get_args_parser()
     args = parser.parse_args()
+    validate_dataset(args.data)
     
-    # Validate medimageinsight-specific args
     if args.model == "medimageinsight" and not os.path.isdir(args.medimageinsight_path):
         raise ValueError(
             f"MedImageInsight repo not found at '{args.medimageinsight_path}'. "

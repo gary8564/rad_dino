@@ -14,7 +14,7 @@ from dotenv import load_dotenv, find_dotenv
 
 from rad_dino.loggings.setup import init_logging
 from rad_dino.data.data_loader import create_test_loader
-from rad_dino.utils.config_utils import setup_configs
+from rad_dino.utils.config_utils import setup_configs, validate_dataset
 from rad_dino.eval.evaluation_processor import EvaluationProcessor
 from rad_dino.configs.config import OutputPaths
 from rad_dino.models.ark import load_pretrained_ark_model
@@ -531,8 +531,8 @@ def get_args_parser() -> argparse.ArgumentParser:
                        choices=['multilabel', 'multiclass', 'binary'])
     parser.add_argument('--model', type=str, required=True, 
                        choices=['medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
-    parser.add_argument('--data', type=str, required=True, 
-                       choices=['TAIX-Ray', 'VinDr-Mammo', 'VinDr-SpineXR', 'TBX11K', 'NODE21'])
+    parser.add_argument('--data', type=str, required=True,
+                       help="Dataset name (must match a key in data_config.yaml)")
     parser.add_argument('--output-path', type=str, required=True,
                        help="Output directory for results")
     parser.add_argument('--batch-size', type=int, default=16,
@@ -617,8 +617,7 @@ def main():
     """Main function for zero-shot inference"""
     parser = get_args_parser()
     args = parser.parse_args()
-    
-    # Validate args
+    validate_dataset(args.data)
     validate_args(args)
     
     # Setup accelerator

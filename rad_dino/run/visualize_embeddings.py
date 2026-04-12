@@ -32,6 +32,7 @@ from rad_dino.eval.feature_extractor import (
     DEFAULT_MEDIMAGEINSIGHT_PATH,
 )
 from rad_dino.loggings.setup import init_logging
+from rad_dino.utils.config_utils import validate_dataset
 from rad_dino.utils.visualization.visualize_embeddings import (
     visualize_feature_embeddings,
 )
@@ -52,10 +53,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--data", type=str, required=True,
-        choices=[
-            "NODE21", "VinDr-SpineXR", "TBX11K",
-            "COVID-CXR", "VinDr-Mammo", "SIIM-ACR",
-        ],
+        help="Dataset name (must match a key in data_config.yaml)",
     )
     parser.add_argument(
         "--model", type=str, required=True,
@@ -106,6 +104,7 @@ def get_args_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = get_args_parser().parse_args()
+    validate_dataset(args.data)
 
     if args.model == "ark" and args.pretrained_ark_path is None:
         raise ValueError("Ark requires --pretrained-ark-path.")

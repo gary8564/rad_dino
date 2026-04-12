@@ -27,7 +27,7 @@ from rad_dino.models.medimageinsight import (
     load_medimageinsight_model,
 )
 from rad_dino.models.siglip import MedSigClassifier
-from rad_dino.utils.config_utils import setup_configs, MODEL_REPOS
+from rad_dino.utils.config_utils import setup_configs, MODEL_REPOS, validate_dataset
 from rad_dino.utils.data_utils import collate_fn
 from rad_dino.utils.model_loader import load_pretrained_model
 from rad_dino.utils.transforms import get_transforms
@@ -234,12 +234,8 @@ def add_args(parser) -> None:
     )
     parser.add_argument(
         "--data", type=str, required=True,
-        choices=[
-            "TBX11K", "SIIM-ACR",
-            "VinDr-Mammo", "NODE21"
-        ],
-        help="Dataset to evaluate on. Only binary and multiclass are supported "
-             "for KNN/SVM evaluation (multi-label is not supported).",
+        help="Dataset name (must match a key in data_config.yaml). "
+             "Only binary and multiclass tasks are supported for KNN/SVM.",
     )
     parser.add_argument(
         "--model", type=str, required=True,
@@ -267,6 +263,7 @@ def add_args(parser) -> None:
 
 def validate_args(args) -> None:
     """Validate CLI arguments."""
+    validate_dataset(args.data)
     if args.task == "multilabel":
         raise ValueError(
             "KNN and SVM evaluation only support binary and multiclass tasks. "
