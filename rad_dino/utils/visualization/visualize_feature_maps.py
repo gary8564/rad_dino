@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 from torchvision.transforms import ToPILImage
 from skimage.io import imread
 
-from rad_dino.utils.visualization.visualize_vit_attention import smooth_attention_overlay
+from rad_dino.utils.visualization.visualize_vit_attention import _smooth_attention_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ def _process_feature_maps_per_image(
             agg_np, format="png", cmap="viridis", dpi=300,
         )
 
-        overlay = smooth_attention_overlay(original_image_float, agg_np, cmap="jet", alpha=0.5)
+        overlay = _smooth_attention_overlay(original_image_float, agg_np)
         plt.imsave(
             os.path.join(stage_dir, f"{activation_mode}_overlay.png"),
             overlay, format="png", dpi=300,
@@ -159,9 +159,7 @@ def _process_feature_maps_per_image(
                 ch_np, format="png", cmap="viridis", dpi=300,
             )
 
-            overlay = smooth_attention_overlay(
-                original_image_float, ch_np, cmap="jet", alpha=0.5,
-            )
+            overlay = _smooth_attention_overlay(original_image_float, ch_np)
             plt.imsave(
                 os.path.join(stage_dir, f"channel_{ch_idx}_overlay.png"),
                 overlay, format="png", dpi=300,

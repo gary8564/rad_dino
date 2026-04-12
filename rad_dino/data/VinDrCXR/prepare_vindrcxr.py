@@ -2,10 +2,10 @@ import os
 import argparse
 import pandas as pd
 import logging
-from typing import Union
+from typing import Optional, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from rad_dino.loggings.setup import init_logging
-from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
+from rad_dino.utils.preprocessing_utils import copy_files_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -14,9 +14,10 @@ def parse_args():
     parser.add_argument("--path-root", type=str, required=True, help="Path to the root directory of the dataset")
     parser.add_argument("--output-dir", type=str, required=True, help="Path to the preprocessed output directory of the dataset")
     parser.add_argument("--classes", nargs="+", default=None, help="Specify an integer k for top-k classes or a list of subset of class names.")
+    parser.add_argument("--symlink", action="store_true", help="Create symlinks instead of copying source images.")
     return parser.parse_args()
 
-def filter_subset_annot_labels(label_path: str, annot_path: str, labels: Union[int, list[str]], output_dir: str = None):
+def filter_subset_annot_labels(label_path: str, annot_path: str, labels: Union[int, list[str]], output_dir: Optional[str] = None):
     """
     A subset of class labels is selected, given the long-tailed distribution in the original dataset.
     
@@ -58,7 +59,12 @@ def filter_subset_annot_labels(label_path: str, annot_path: str, labels: Union[i
     logger.debug(f"Filtered csv are saved to {out_dir}!")
     return class_labels, df_label_filtered
 
-def prepare_vindrcxr(path_root: str, output_dir: str, class_labels: Union[int, str, list[str], None]):
+def prepare_vindrcxr(
+    path_root: str,
+    output_dir: str,
+    class_labels: Union[int, str, list[str], None],
+    use_symlink: bool = False,
+):
     # 1) SELECT CLASS SET 
     train_labels_path = os.path.join(path_root, "annotations/image_labels_train.csv")
     train_annot_path = os.path.join(path_root, "annotations/annotations_train.csv")
@@ -85,32 +91,25 @@ def prepare_vindrcxr(path_root: str, output_dir: str, class_labels: Union[int, s
     df_train_agg.to_csv(os.path.join(output_dir, "train_labels.csv"))
     df_test_agg.to_csv(os.path.join(output_dir, "test_labels.csv"))
     
-    # 3) SYMLINK .dicom FILES
-    def _create_symlink(src: str, dst: str):
-        """Create a symlink, replacing any existing one."""
-        try:
-            os.symlink(src, dst)
-        except FileExistsError:
-            os.remove(dst)
-            os.symlink(src, dst)
-
+    # 3) COPY .dicom FILES
     for split, df in [("train", df_train_agg), ("test", df_test_agg)]:
         src_folder = os.path.join(path_root, split)
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
-        symlink_pairs = [
+        file_pairs = [
             (os.path.join(src_folder, f"{image_id}.dicom"),
              os.path.join(dst_folder, f"{image_id}.dcm"))
             for image_id in df.index
         ]
-        create_symlinks_parallel(symlink_pairs)
-        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
+        copy_files_parallel(file_pairs, use_symlink=use_symlink)
+        action = "Symlinked" if use_symlink else "Copied"
+        logger.info(f"{action} {len(file_pairs)} images to {dst_folder}")
     logger.info(f"Preprocessing VinDr-CXR complete! The processed dataset is saved in {output_dir}")
 
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    prepare_vindrcxr(args.path_root, args.output_dir, args.classes)
+    prepare_vindrcxr(args.path_root, args.output_dir, args.classes, use_symlink=args.symlink)
 
 if __name__ == "__main__":
     main()

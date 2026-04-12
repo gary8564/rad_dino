@@ -2,7 +2,7 @@ import unittest
 import torch
 import torch.nn as nn
 from unittest.mock import Mock, patch
-from rad_dino.models.ark import SwinTransformer, ArkClassifier, load_prtrained_ark_model
+from rad_dino.models.ark import SwinTransformer, ArkClassifier, load_pretrained_ark_model
 
 
 class TestSwinTransformer(unittest.TestCase):
@@ -332,7 +332,7 @@ class TestArkFeatureMapCapture(unittest.TestCase):
 
 
 class TestLoadArkModel(unittest.TestCase):
-    """Test the load_prtrained_ark_model function."""
+    """Test the load_pretrained_ark_model function."""
     
     @patch('torch.load')
     def test_load_ark_model(self, mock_load):
@@ -353,7 +353,7 @@ class TestLoadArkModel(unittest.TestCase):
             mock_model.patch_embed.proj.weight.shape = (192, 3, 4, 4)  # Mock the shape attribute
             mock_swin.return_value = mock_model
             
-            model = load_prtrained_ark_model(
+            model = load_pretrained_ark_model(
                 checkpoint_path="/fake/path/checkpoint.pth.tar",
                 num_classes_list=[2, 3],
                 img_size=768,

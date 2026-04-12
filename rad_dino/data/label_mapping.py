@@ -9,12 +9,13 @@ MULTI_CLASS_DATASET_LABEL_MAPPINGS = {
         2: "BIRADS_3",
         3: "BIRADS_4",
         4: "BIRADS_5"
-    }
+    },
     # Add more datasets here as needed
-    # "New-Dataset": {
-    #     0: "Class_A", 
-    #     1: "Class_B", ...
-    # }
+    "TBX11K": {
+        0: "Healthy", 
+        1: "Other diseases",
+        2: "Tuberculosis"
+    }
 }
 
 def class_labels_mapping(dataset_name: str, class_labels: List) -> List:

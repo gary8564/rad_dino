@@ -1,192 +1,197 @@
-# VinDr-Mammo Dataset Preprocessing
+# Dataset Preprocessing Guide
 
-This document describes the preprocessing pipeline for the VinDr-Mammo dataset, which supports both single-view and multi-view mammography analysis.
+This document describes the supported datasets, how to obtain them, and how to
+run the preprocessing scripts that convert raw downloads into the format
+expected by `RadImageClassificationDataset`.
 
-## Dataset Overview
+Every preprocessing script produces:
 
-VinDr-Mammo is a large-scale mammography dataset containing 20,000 mammography images from 5,000 patients. Each patient has 4 images:
-- Left breast: CC (cranio-caudal) and MLO (medio-lateral oblique) views
-- Right breast: CC and MLO views
+- `train_labels.csv` (and optionally `val_labels.csv` / `test_labels.csv`) with
+  an `image_id` (or `study_id` for multi-view) index and label columns.
+- An `images/{split}/` directory containing copied source image files (DICOM,
+  PNG, or MHA) by default.
 
-## Data Sources
+All preprocessing scripts support an optional `--symlink` flag. By default,
+files are copied into the preprocessed dataset directory. Pass `--symlink` if
+you prefer lightweight references to the original files instead.
 
-The dataset provides two annotation files:
-1. **`breast-level_annotations.csv`**: Contains BIRADS and density labels (one row per image)
-2. **`finding_annotations.csv`**: Contains finding categories (multiple rows per image, multiple findings per image)
+After preprocessing, update `rad_dino/configs/data_config.yaml` so that each dataset's `data_root_folder` points to the output directory.
 
-## Preprocessing Scripts
+---
 
-### 1. `prepare_vindrmammo_birad.py`
-Specialized script for BIRADS and density classification tasks.
+## 0. Datasets Overview
 
-**Features:**
-- Supports `breast_birads` and `breast_density` targets
-- Single-view and multi-view processing
-- Uses breast-level annotations (20,000 images)
-- Clean implementation for BIRADS/density tasks
+| Dataset  | Modality | Task | Source | Data Size |
+|:--------:|:--------:|:----:|:------:|:---------:|
+| VinDr-CXR | CXR | Multilabel | [PhysioNet](https://physionet.org/content/vindr-cxr/1.0.0/) / [VinDr](https://vindr.ai/cxr) | 18,000 images (15,000 train / 3,000 test) |
+| RSNA Pneumonia | CXR | Binary | [Kaggle](https://www.kaggle.com/c/rsna-pneumonia-detection-challenge/data) | 26,684 images |
+| TAIX-Ray | ICU bedside CXR | Multilabel | [Hugging Face](https://huggingface.co/datasets/TLAIM/TAIX-Ray) | 200K images from 50K patients | 
+| NODE21 | CXR | Binary | [Zenodo (training data)](https://zenodo.org/record/4725881) / [Grand Challenge](https://node21.grand-challenge.org/Data/) | 4,882 images |
+| COVID-CXR | CXR | Binary | [Kaggle (COVIDx CXR-2)](https://www.kaggle.com/datasets/andyczhao/covidx-cxr2) | 13,975 CXRs across 13,870 patient cases |
+| VinDr-PCXR | CXR | Multilabel | [PhysioNet](https://physionet.org/content/vindr-pcxr/1.0.0/) | 9,125 pediatric CXRs (7,728 training / 1,397 test) |
+| TBX11K | CXR | Binary / Multiclass | [Kaggle](https://www.kaggle.com/datasets/usmanshams/tbx-11) | 11,200 CXRs (6,600 train / 1,800 val / 2,800 test) |
+| VinDr-Mammo |  Full-field digital mammography | Multilabel / Multiclass / Binary | [PhysioNet](https://physionet.org/content/vindr-mammo/1.0.0/) / [VinDr](https://vindr.ai/datasets/mammo) | 20,000 images from 5,000 exams (4 views per exam) |
+| VinDr-SpineXR | Spine X-ray | Multilabel | [PhysioNet](https://physionet.org/content/vindr-spinexr/1.0.0/) / [VinDr](https://vindr.ai/spinexr) | 10,466 spine radiographs from 5,000 studies |
 
-**Data Sizes:**
-- Single-view: 16,000 train, 4,000 test images
-- Multi-view: 4,000 train, 1,000 test studies
-
-### 2. `prepare_vindrmammo_multilabel.py`
-General-purpose script for finding categories (multilabel classification).
-
-**Features:**
-- Supports finding categories only
-- Single-view and multi-view processing
-- Uses finding annotations (20,486 images)
-- Majority voting aggregation for multiple annotations per image
-
-**Data Sizes:**
-- Single-view: 16,391 train, 4,095 test images
-- Multi-view: 4,000 train, 1,000 test studies
-
-## Aggregation Methods
-
-### Majority Voting
-For finding categories with multiple annotations per image, we use majority voting:
-- If more than 50% of annotations for an image have a category, it's marked as present (1)
-- Otherwise, it's marked as absent (0)
-- This reduces the effect of outlier annotations
-
-### Mode Aggregation
-For BIRADS and density (single annotation per image):
-- Uses mode aggregation when multiple images per study have different labels
-- Ensures consistent labeling across all views of a study
-
-## Multi-View Processing
-
-Multi-view processing is crucial for mammography analysis as it mimics radiologist workflow:
-
-### Multi-View Structure
-When `--multi-view` is enabled, the output structure becomes:
-```
-images/
-├── train/
-│   ├── study_id_1/
-│   │   ├── L_CC.dcm
-│   │   ├── L_MLO.dcm
-│   │   ├── R_CC.dcm
-│   │   └── R_MLO.dcm
-│   └── study_id_2/
-│       └── ...
-└── test/
-    └── ...
-```
-
-### Single-View Structure
-Default structure (without `--multi-view`):
-```
-images/
-├── train/
-│   ├── image_id_1.dcm
-│   ├── image_id_2.dcm
-│   └── ...
-└── test/
-    └── ...
-```
-
-### Data Preprocessing Script
-The main preprocessing script (`data_preprocessing.sh`) processes all datasets:
+## 1. VinDr-CXR
 
 ```bash
-# Finding Categories (7 most common classes)
-python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_multilabel.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
-    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/findings \
-    --classes 7
+python ./rad_dino/data/VinDrCXR/prepare_vindrcxr.py \
+    --path-root /path/to/VinDr-CXR \
+    --output-dir /path/to/preprocessed/VinDr-CXR \
+    --classes "Lung Opacity" "Cardiomegaly" "Pleural thickening" \
+              "Aortic enlargement" "Pleural effusion" "Pulmonary fibrosis" \
+              "Tuberculosis" "No finding"
+```
 
-# BIRADS Classification
+Use `--classes N` (integer) to keep the top-N most prevalent classes, or
+provide an explicit list of class names as shown above.
+
+---
+
+## 2. RSNA Pneumonia
+
+```bash
+python ./rad_dino/data/RSNAPneumonia/prepare_rsna_pneumonia.py \
+    --path-root /path/to/RSNA-Pneumonia \
+    --output-dir /path/to/preprocessed/RSNA-Pneumonia \
+    --test-size 0.2
+```
+
+Since RSNA test set is not publicly accesible, the script creates a stratified train/test split from public training set.
+
+---
+
+## 3. VinDr-Mammo
+
+VinDr-Mammo is always processed as **multi-view** (4 views per study: L-CC, L-MLO, R-CC, R-MLO).  Only studies with all four views are kept.
+
+Two preprocessing scripts are available depending on the classification task:
+
+### BI-RADS classification (multiclass)
+
+```bash
 python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_birad.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
-    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/birads \
-    --target breast_birads
-
-# Density Classification
-python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_birad.py \
-    --path-root /hpcwork/rwth1833/datasets/VinDr-Mammo/download/physionet.org/files/vindr-mammo/1.0.0 \
-    --output-dir /hpcwork/rwth1833/datasets/preprocessed/VinDr-Mammo/density \
-    --target breast_density
+    --path-root /path/to/vindr-mammo/1.0.0 \
+    --output-dir /path/to/preprocessed/VinDr-Mammo/birads
 ```
 
-### Advanced Usage Examples
+### Binary classification (positive = BI-RADS 4 or 5)
 
-#### BIRADS Classification (Multi-View)
 ```bash
-python -m rad_dino.data.VinDrMammo.prepare_vindrmammo_birad \
-    --path-root /path/to/vindr-mammo \
-    --output-dir /path/to/output \
-    --target breast_birads \
-    --multi-view
+python ./rad_dino/data/VinDrMammo/prepare_vindrmammo_binary.py \
+    --path-root /path/to/vindr-mammo/1.0.0 \
+    --output-dir /path/to/preprocessed/VinDr-Mammo/binary
 ```
 
-#### Finding Categories with Custom Classes
+---
+
+## 4. TAIX-Ray
+
 ```bash
-python -m rad_dino.data.VinDrMammo.prepare_vindrmammo_multilabel \
-    --path-root /path/to/vindr-mammo \
-    --output-dir /path/to/output \
-    --classes "Mass" "Suspicious Calcification" "No Finding" \
-    --multi-view
+python ./rad_dino/data/TAIXRay/prepare_taixray.py \
+    --path-root /path/to/TAIX-Ray \
+    --output-dir /path/to/preprocessed/TAIX-Ray
 ```
 
-## Output Files
+---
 
-### For BIRADS/Density Tasks
-- `train_labels.csv`: Training labels with numeric encoding
-- `test_labels.csv`: Test labels with numeric encoding
-- `label_mapping.csv`: Mapping from original labels to numeric indices
+## 5. NODE21
 
-### For Finding Categories Tasks
-- `train_labels_multilabel.csv`: Multi-hot encoded training labels
-- `test_labels_multilabel.csv`: Multi-hot encoded test labels
+```bash
+python ./rad_dino/data/Node21/prepare_node21.py \
+    --path-root /path/to/NODE21/cxr_images/proccessed_data \
+    --output-dir /path/to/preprocessed/NODE21 \
+    --test-size 0.2
+```
 
-## Dataset Statistics
+---
 
-### BIRADS Distribution
-- BI-RADS 1: 13,406 images (67.0%)
-- BI-RADS 2: 4,676 images (23.4%)
-- BI-RADS 3: 930 images (4.7%)
-- BI-RADS 4: 762 images (3.8%)
-- BI-RADS 5: 226 images (1.1%)
+## 6. COVID-CXR
 
-### Density Distribution
-- DENSITY A: 100 images (0.5%)
-- DENSITY B: 1,908 images (9.5%)
-- DENSITY C: 15,292 images (76.5%)
-- DENSITY D: 2,700 images (13.5%)
+```bash
+python ./rad_dino/data/COVIDCXR/prepare_covid_cxr.py \
+    --path-root /path/to/covid-cxr \
+    --output-dir /path/to/preprocessed/COVID-CXR
+```
 
-### Finding Categories (Top 7)
-- No Finding: 18,232 annotations (89.0%)
-- Mass: 1,226 annotations (6.0%)
-- Suspicious Calcification: 543 annotations (2.6%)
-- Asymmetry: 392 annotations (1.9%)
-- Architectural Distortion: 119 annotations (0.6%)
-- Skin Thickening: 89 annotations (0.4%)
-- Suspicious Lymph Node: 67 annotations (0.3%)
+---
 
-## Research Context
+## 7. VinDr-PCXR
 
-Multi-view mammography analysis is supported by recent research:
-- [MamT4: Multi-view Attention Networks for Mammography Cancer Classification](https://arxiv.org/html/2411.01669v1)
-- [Multi-view deep learning approaches for mammography analysis](https://arxiv.org/pdf/2112.04490)
-- [Advanced multi-view mammography techniques](https://arxiv.org/pdf/2411.15802)
+```bash
+python ./rad_dino/data/VinDrPCXR/preprocess_vindrpcxr.py \
+    --path-root /path/to/vindr-pcxr/1.0.0 \
+    --output-dir /path/to/preprocessed/VinDr-PCXR
+```
 
-These studies demonstrate the importance of leveraging all four views (L-CC, L-MLO, R-CC, R-MLO) for improved diagnostic accuracy.
+---
 
-## Quality Assurance
+## 8. VinDr-SpineXR
 
-### Data Validation
-- Ensures all required image files exist before creating symlinks
-- Validates label consistency across multiple annotations
-- Checks for data leakage between train/test splits
+```bash
+python ./rad_dino/data/VinDrSpineXR/prepare_vindrspinexr.py \
+    --path-root /path/to/vindr-spinexr \
+    --output-dir /path/to/preprocessed/VinDr-SpineXR
+```
 
-### Performance Considerations
-- Uses symlinks instead of copying files to save storage
-- Efficient aggregation using pandas groupby operations
-- Memory-efficient processing for large datasets
+---
 
-### Error Handling
-- Graceful handling of missing annotations
-- Proper error messages for missing image files
-- Validation of input parameters and data formats 
+## 9. TBX11K
+
+```bash
+python ./rad_dino/data/TBX11K/prepare_tbx11k.py \
+    --path-root /path/to/TBX11K \
+    --output-dir /path/to/preprocessed/TBX11K
+```
+
+This creates two subdirectories: `binary/` (TB vs healthy) and `multiclass/` (TB / sick / healthy). 
+Point `data_config.yaml` to the appropriate subdirectory.
+
+---
+
+## Output Directory Structure
+
+After preprocessing, each dataset directory follows this layout:
+
+```
+<output-dir>/
+├── train_labels.csv        # image_id (or study_id) indexed label file
+├── test_labels.csv
+├── val_labels.csv          # (only COVID-CXR and TAIX-Ray)
+├── label_mapping.csv       # (only VinDr-Mammo BI-RADS)
+└── images/
+    ├── train/
+    │   ├── image_id_1.dcm  # copied files by default; symlinks with --symlink
+    │   └── ...
+    └── test/
+        └── ...
+```
+
+For VinDr-Mammo the `images/{split}/` directories contain per-study subdirectories:
+
+```
+images/train/
+├── study_001/
+│   ├── L_CC.dcm
+│   ├── L_MLO.dcm
+│   ├── R_CC.dcm
+│   └── R_MLO.dcm
+└── ...
+```
+
+## Verify no data leakage
+
+After preprocessing any dataset, you can check for data leakage (overlapping
+sample IDs or patient IDs between splits) using the shared checker:
+
+```bash
+python -m rad_dino.data.check_data_leakage \
+    --data-dir /path/to/preprocessed/dataset
+```
+
+## Configuration
+
+After preprocessing, update `rad_dino/configs/data_config.yaml` so that each
+dataset's `data_root_folder` points to the corresponding output directory.
+See the [README](../../README.md) for details on running training and evaluation.

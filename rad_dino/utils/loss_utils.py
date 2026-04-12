@@ -65,22 +65,18 @@ def get_class_weights(task: str, dataset: Dataset):
             return None
     elif task == "multiclass":
         # For multiclass classification, calculate class weights
-        # Using formula: weight_for_class_i = total_samples / (num_samples_in_class_i)
-        class_weights = []
+        # Using formula: weight_for_class_i = total_samples / (num_classes * num_samples_in_class_i)
         total_samples = len(dataset.df)
-        # Get all columns except image_id
-        class_columns = [col for col in dataset.df.columns if col != "image_id"]
-        # Calculate weight for each class column
-        for class_idx, col in enumerate(class_columns):
-            # Count positive samples for this class (assuming binary encoding: 0/1)
-            class_counts = dataset.df[col].value_counts().to_dict()
-            num_positive = class_counts.get(1, 0)
-            if num_positive == 0:
-                logger.warning(f"No positive samples found for class {col}, using default weight 1.0")
-                weight = 1.0
+        class_counts = dataset.df["label"].value_counts().sort_index().to_dict()
+        num_classes = len(class_counts)
+        class_weights = []
+        for cls_idx in sorted(class_counts.keys()):
+            count = class_counts[cls_idx]
+            if count == 0:
+                logger.warning(f"No samples found for class {cls_idx}, using default weight 1.0")
+                class_weights.append(1.0)
             else:
-                weight = total_samples / num_positive
-            class_weights.append(weight)
+                class_weights.append(total_samples / (num_classes * count))
         return torch.tensor(class_weights, dtype=torch.float32)
     else:
         raise ValueError(f"Task {task} is not supported for weight calculation") 

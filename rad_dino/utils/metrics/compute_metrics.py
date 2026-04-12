@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Optional, List, Dict, Any
 from sklearn.metrics import confusion_matrix, roc_auc_score, f1_score
-from rad_dino.utils.plot_benchmark import visualize_evaluate_metrics
+from rad_dino.utils.plot_metrics import visualize_evaluate_metrics
 from rad_dino.loggings.setup import init_logging
 
 init_logging()

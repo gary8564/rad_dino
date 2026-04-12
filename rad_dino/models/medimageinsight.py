@@ -1,3 +1,5 @@
+"""MedImageInsight (UniCL + DaViT) classifier loaded from a local clone of lion-ai/MedImageInsights."""
+
 import os
 import sys
 import torch

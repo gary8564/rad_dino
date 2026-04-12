@@ -106,68 +106,55 @@ class TestLossUtils(unittest.TestCase):
     
     def test_get_class_weights_multiclass(self):
         """Test class weight calculation for multiclass classification."""
-        # Create multiclass dataset
+        # Multiclass datasets use a single 'label' column with integer class indices
         df = pd.DataFrame({
             'image_id': ['img1', 'img2', 'img3', 'img4', 'img5', 'img6'],
-            'class1': [1, 1, 0, 0, 0, 0],  # 2 positive
-            'class2': [0, 0, 1, 1, 0, 0],  # 2 positive
-            'class3': [0, 0, 0, 0, 1, 1]   # 2 positive
+            'label': [0, 0, 1, 1, 2, 2]
         })
         dataset = MockDataset(df)
         
         weights = get_class_weights("multiclass", dataset)
         
-        # Should return weights for each class
         self.assertIsInstance(weights, torch.Tensor)
-        self.assertEqual(weights.shape, (3,))  # 3 classes
+        self.assertEqual(weights.shape, (3,))
         
-        # Expected weights: [3.0, 3.0, 3.0] (total_samples / num_positive for each class)
-        # total_samples = 6, num_positive for each class = 2, so weight = 6/2 = 3.0
-        expected_weights = torch.tensor([3.0, 3.0, 3.0], dtype=torch.float32)
+        # weight = total / (num_classes * count_per_class) = 6 / (3 * 2) = 1.0
+        expected_weights = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32)
         torch.testing.assert_close(weights, expected_weights)
     
     def test_get_class_weights_multiclass_imbalanced(self):
         """Test class weight calculation for imbalanced multiclass classification."""
-        # Create imbalanced multiclass dataset
         df = pd.DataFrame({
             'image_id': ['img1', 'img2', 'img3', 'img4', 'img5'],
-            'class1': [1, 1, 1, 0, 0],  # 3 positive
-            'class2': [0, 0, 0, 1, 0],  # 1 positive
-            'class3': [0, 0, 0, 0, 1]   # 1 positive
+            'label': [0, 0, 0, 1, 2]  # class 0: 3, class 1: 1, class 2: 1
         })
         dataset = MockDataset(df)
         
         weights = get_class_weights("multiclass", dataset)
         
-        # Should return weights for each class
         self.assertIsInstance(weights, torch.Tensor)
-        self.assertEqual(weights.shape, (3,))  # 3 classes
+        self.assertEqual(weights.shape, (3,))
         
-        # Expected weights: [1.67, 5.0, 5.0] (total_samples / num_positive for each class)
-        # total_samples = 5, num_positive: [3, 1, 1], so weights: [5/3, 5/1, 5/1]
-        expected_weights = torch.tensor([5/3, 5.0, 5.0], dtype=torch.float32)
-        torch.testing.assert_close(weights, expected_weights, rtol=1e-6, atol=1e-6)
+        # weight = total / (num_classes * count) => [5/(3*3), 5/(3*1), 5/(3*1)]
+        expected_weights = torch.tensor([5/9, 5/3, 5/3], dtype=torch.float32)
+        torch.testing.assert_close(weights, expected_weights, rtol=1e-5, atol=1e-5)
     
-    def test_get_class_weights_multiclass_no_positive(self):
-        """Test class weight calculation for multiclass with no positive samples for some classes."""
-        # Create multiclass dataset with some classes having no positive samples
+    def test_get_class_weights_multiclass_single_class_heavy(self):
+        """Test class weight calculation for multiclass with heavily skewed distribution."""
         df = pd.DataFrame({
             'image_id': ['img1', 'img2', 'img3'],
-            'class1': [1, 0, 0],  # 1 positive
-            'class2': [0, 0, 0],  # No positive
-            'class3': [0, 1, 0]   # 1 positive
+            'label': [0, 0, 1]  # class 0: 2, class 1: 1
         })
         dataset = MockDataset(df)
         
         weights = get_class_weights("multiclass", dataset)
         
-        # Should return weights for each class
         self.assertIsInstance(weights, torch.Tensor)
-        self.assertEqual(weights.shape, (3,))  # 3 classes
+        self.assertEqual(weights.shape, (2,))
         
-        # Expected weights: [3.0, 1.0, 3.0] (default weight 1.0 for class with no positive)
-        expected_weights = torch.tensor([3.0, 1.0, 3.0], dtype=torch.float32)
-        torch.testing.assert_close(weights, expected_weights)
+        # weight = total / (num_classes * count) => [3/(2*2), 3/(2*1)]
+        expected_weights = torch.tensor([3/4, 3/2], dtype=torch.float32)
+        torch.testing.assert_close(weights, expected_weights, rtol=1e-5, atol=1e-5)
     
     def test_get_class_weights_invalid_task(self):
         """Test class weight calculation with invalid task."""

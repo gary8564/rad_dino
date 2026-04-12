@@ -115,6 +115,7 @@ class ModelRegistry:
         self.register_unfreeze_handler('dinov2-base', UnfreezeViTHandler())
         self.register_unfreeze_handler('dinov2-small', UnfreezeViTHandler())
         self.register_unfreeze_handler('dinov2-large', UnfreezeViTHandler())
+        self.register_unfreeze_handler('dinov2-large-reg', UnfreezeViTHandler())
         self.register_unfreeze_handler('dinov3-small-plus', UnfreezeViTHandler())
         self.register_unfreeze_handler('dinov3-base', UnfreezeViTHandler())
         self.register_unfreeze_handler('dinov3-large', UnfreezeViTHandler())

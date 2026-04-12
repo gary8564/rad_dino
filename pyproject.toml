@@ -8,7 +8,7 @@ version = "0.1.0"
 authors = [
   { name="Chia-Hao Chang", email="chia.hao.chang@rwth-aachen.de" },
 ]
-description = ""
+description = "Benchmarking CXR foundation models (DINO, RAD-DINO, Ark, MedSigLIP, BiomedCLIP, MedImageInsight)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -26,27 +26,34 @@ dependencies = [
     "scipy==1.15.2",
     "tqdm==4.67.1",
     "pydicom==3.0.1",
-    "wandb==0.19.6",
     "einops==0.8.1",
     "datasets==3.3.2",
     "iterative-stratification==0.1.9",
     "pyyaml==6.0.2",
     "accelerate==1.9.0",
     "grad-cam==1.5.5",
-    "lxt==2.1",
     "huggingface_hub==0.34.3",
     "safetensors==0.5.3",
     "timm==1.0.19",
     "opencv-python==4.11.0.86",
     "scikit-image==0.25.2",
     "seaborn==0.13.2",
-    "supervision==0.25.1",
     "sentencepiece==0.2.0",
+    "python-dotenv>=1.0",
     "SimpleITK",
     "mup>=1.0.0",
     "fvcore",
     "tenacity",
-    "open-clip-torch>=2.23.0"
+    "open-clip-torch>=2.23.0",
+    "umap-learn>=0.5.6"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+wandb = [
+    "wandb>=0.19",
 ]
 
 [tool.setuptools.packages.find]

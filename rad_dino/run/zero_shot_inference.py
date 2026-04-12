@@ -1,11 +1,12 @@
 import os
 import argparse
 import torch
+import torch.nn.functional as F
 import logging
 import json
 from tqdm import tqdm
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Tuple, Union
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoModel
@@ -16,7 +17,7 @@ from rad_dino.data.data_loader import create_test_loader
 from rad_dino.utils.config_utils import setup_configs
 from rad_dino.eval.evaluation_processor import EvaluationProcessor
 from rad_dino.configs.config import OutputPaths
-from rad_dino.models.ark import load_prtrained_ark_model
+from rad_dino.models.ark import load_pretrained_ark_model
 from rad_dino.models.medimageinsight import load_medimageinsight_model
 from rad_dino.models.biomedclip import load_biomedclip_model, get_biomedclip_tokenizer
 from rad_dino.utils.transforms import get_transforms
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 CURR_DIR = os.path.dirname(os.path.realpath(__file__))
 DEFAULT_MEDIMAGEINSIGHT_PATH = os.path.normpath(os.path.join(CURR_DIR, "..", "models", "MedImageInsights"))
 
+# VLM zero-shot classifiers
 class BaseVLMZeroShotClassifier(ABC):
     """
     Abstract base for CLIP-style VLM zero-shot classifiers.
@@ -58,14 +60,66 @@ class BaseVLMZeroShotClassifier(ABC):
         """
         ...
 
+    @abstractmethod
+    def encode_image(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Encode images into L2-normalised embeddings.
+
+        Args:
+            images: ``[B, C, H, W]``
+
+        Returns:
+            ``(image_features [B, D], logit_scale scalar)``
+        """
+        ...
+
+    @abstractmethod
+    def encode_text(self, text_prompts: List[str]) -> torch.Tensor:
+        """
+        Encode text prompts into L2-normalised embeddings.
+
+        Args:
+            text_prompts: List of text strings.
+
+        Returns:
+            text_features: ``[P, D]``
+        """
+        ...
+
+    def _compute_multiview_logits(
+        self,
+        images: torch.Tensor,
+        text_features: torch.Tensor,
+        num_views: int,
+    ) -> torch.Tensor:
+        """
+        Embedding-level mean fusion for multi-view images.
+
+        1. Flatten [B, V, C, H, W] -> [B*V, C, H, W]
+        2. Encode each view -> [B*V, D]
+        3. Reshape -> [B, V, D], average-pool -> [B, D] -> L2-normalise
+        4. Compute scale * img @ text.T -> [B, P]
+        """
+        batch_size = images.shape[0]
+        flat = images.view(batch_size * num_views, *images.shape[2:])
+        img_feats, logit_scale = self.encode_image(flat)           # [B*V, D]
+        img_feats = img_feats.view(batch_size, num_views, -1)      # [B, V, D]
+        img_feats = img_feats.mean(dim=1)                          # [B, D]
+        img_feats = F.normalize(img_feats, p=2, dim=1)
+        return logit_scale * img_feats @ text_features.t()         # [B, P]
+
     def run_zero_shot_inference(
         self,
         data_loader: DataLoader,
         evaluation_processor: EvaluationProcessor,
         text_prompts: Optional[Union[List[str], Dict[str, Any]]] = None,
+        multi_view: bool = False,
+        num_views: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run zero-shot inference over the full dataset.
+
+        When ``multi_view=True``, per-view image embeddings are average-pooled before comparing to text embeddings (embedding-level fusion).
 
         For multilabel tasks with paired templates, 
         ``text_prompts`` should be a dict with keys ``positive_template``, ``negative_template``, and ``class_names``. 
@@ -97,7 +151,6 @@ class BaseVLMZeroShotClassifier(ABC):
             class_names = text_prompts["class_names"]
             pos_prompts = [text_prompts["positive_template"].format(c) for c in class_names]
             neg_prompts = [text_prompts["negative_template"].format(c) for c in class_names]
-            # Concatenate so we call `predict` only once per batch
             all_prompts = pos_prompts + neg_prompts   # length 2N
             n_classes = len(class_names)
             logger.info(
@@ -112,6 +165,17 @@ class BaseVLMZeroShotClassifier(ABC):
                     f"Got {type(text_prompts).__name__} with length {len(text_prompts) if isinstance(text_prompts, list) else 'N/A'}."
                 )
 
+        # Pre-encode text once for multi-view (avoids repeated tokenization)
+        multi_view_text_features = None
+        if multi_view:
+            if is_multilabel:
+                multi_view_text_features = self.encode_text(all_prompts)
+            else:
+                multi_view_text_features = self.encode_text(text_prompts)
+            logger.info(
+                "Multi-view enabled: %d views, embedding-level mean fusion", num_views
+            )
+
         for batch in tqdm(data_loader, desc="Zero-shot inference..."):
             images = batch["pixel_values"]
             labels = batch["labels"]
@@ -119,7 +183,12 @@ class BaseVLMZeroShotClassifier(ABC):
 
             if is_multilabel:
                 # Compute similarities to all 2N prompts at once: [B, 2N]
-                logits_all = self.predict(images, all_prompts)
+                if multi_view:
+                    logits_all = self._compute_multiview_logits(
+                        images, multi_view_text_features, num_views
+                    )
+                else:
+                    logits_all = self.predict(images, all_prompts)
                 pos_logits = logits_all[:, :n_classes]   # [B, N]
                 neg_logits = logits_all[:, n_classes:]   # [B, N]
 
@@ -131,27 +200,29 @@ class BaseVLMZeroShotClassifier(ABC):
                     image_ids, labels, logits=logits_all, probs=probs
                 )
             elif is_binary:
-                logits = self.predict(images, text_prompts)
+                if multi_view:
+                    logits = self._compute_multiview_logits(
+                        images, multi_view_text_features, num_views
+                    )
+                else:
+                    logits = self.predict(images, text_prompts)
 
-                # Paired softmax over [negative, positive] prompts and extract P(positive)
                 probs = torch.softmax(logits, dim=1)
                 prob_pos = probs[:, -1].unsqueeze(1)  # [B, 1]
                 evaluation_processor.add_batch_results(
                     image_ids, labels, logits=logits, probs=prob_pos
                 )
             else:
-                # Multiclass: pass raw logits; EvaluationProcessor applies softmax
-                logits = self.predict(images, text_prompts)
+                if multi_view:
+                    logits = self._compute_multiview_logits(
+                        images, multi_view_text_features, num_views
+                    )
+                else:
+                    logits = self.predict(images, text_prompts)
                 evaluation_processor.add_batch_results(image_ids, labels, logits)
 
         metrics = evaluation_processor.process_and_save_results()
         return metrics
-
-
-# ---------------------------------------------------------------------------
-# Concrete VLM zero-shot classifiers
-# ---------------------------------------------------------------------------
-
 
 class MedSigLIPZeroShotClassifier(BaseVLMZeroShotClassifier):
     """Zero-shot classifier using MedSigLIP (HuggingFace SigLIP)."""
@@ -182,6 +253,30 @@ class MedSigLIPZeroShotClassifier(BaseVLMZeroShotClassifier):
             )
         return outputs.logits_per_image
 
+    def encode_image(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        images = images.to(self.device)
+        with torch.no_grad():
+            feats = self.model.get_image_features(pixel_values=images)
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+            scale = self.model.logit_scale.exp()
+        return feats, scale
+
+    def encode_text(self, text_prompts: List[str]) -> torch.Tensor:
+        text_inputs = self.tokenizer(
+            text_prompts,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
+        with torch.no_grad():
+            feats = self.model.get_text_features(
+                input_ids=text_inputs["input_ids"],
+                attention_mask=text_inputs["attention_mask"],
+            )
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+        return feats
 
 class MedImageInsightZeroShotClassifier(BaseVLMZeroShotClassifier):
     """Zero-shot classifier using MedImageInsight (UniCL two-tower model)."""
@@ -215,6 +310,18 @@ class MedImageInsightZeroShotClassifier(BaseVLMZeroShotClassifier):
             logits_per_image = image_features @ text_features.t() * temperature
         return logits_per_image
 
+    def encode_image(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        images = images.to(self.device)
+        with torch.no_grad():
+            feats = self.model.encode_image(images, norm=True)
+            scale = self.model.logit_scale.exp()
+        return feats, scale
+
+    def encode_text(self, text_prompts: List[str]) -> torch.Tensor:
+        text_tokens = self._tokenize(text_prompts)
+        with torch.no_grad():
+            feats = self.model.encode_text(text_tokens, norm=True)
+        return feats
 
 class BiomedCLIPZeroShotClassifier(BaseVLMZeroShotClassifier):
     """Zero-shot classifier using BiomedCLIP (open_clip ViT-B/16 + PubMedBERT)."""
@@ -237,7 +344,24 @@ class BiomedCLIPZeroShotClassifier(BaseVLMZeroShotClassifier):
             logits_per_image = logit_scale * image_features @ text_features.t()
         return logits_per_image
 
+    def encode_image(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        images = images.to(self.device)
+        with torch.no_grad():
+            feats = self.model.encode_image(images)
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+            scale = self.model.logit_scale.exp()
+        return feats, scale
 
+    def encode_text(self, text_prompts: List[str]) -> torch.Tensor:
+        texts = self.tokenizer(
+            text_prompts, context_length=self.context_length
+        ).to(self.device)
+        with torch.no_grad():
+            feats = self.model.encode_text(texts)
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+        return feats
+
+# Ark zero-shot classifier
 class ArkZeroShotClassifier:
     def __init__(self, checkpoint_path: str, device: str = "cuda"):
         """
@@ -254,7 +378,7 @@ class ArkZeroShotClassifier:
         self._target_to_pretrained_label_indices = None 
         
         # Load Ark model with all pretrained task heads
-        self.model = load_prtrained_ark_model(
+        self.model = load_pretrained_ark_model(
             checkpoint_path=checkpoint_path,
             num_classes_list=[14, 14, 14, 3, 6, 1],  # Ark+ pretrained tasks
             img_size=768,
@@ -295,45 +419,67 @@ class ArkZeroShotClassifier:
             images: Pre-processed image tensors from dataset [B, C, H, W]
             
         Returns:
-            logits: Tensor of shape [B, num_heads, num_classes]
+            logits: Tensor of shape [B, total_pretrained_classes]
         """
         images = images.to(self.device)
         with torch.no_grad():
-            # model returns list of outputs from all heads and attention maps
             pre_logits, _ = self.model(images) 
             logits = torch.cat(pre_logits, dim=1)
         return logits
-    
+
+    def predict_all_heads_multiview(self, images: torch.Tensor, num_views: int) -> torch.Tensor:
+        """
+        Multi-view embedding-level mean fusion through Ark's backbone and task heads.
+
+        1. Flatten ``[B, V, C, H, W]`` -> ``[B*V, C, H, W]``
+        2. ``forward_features`` + ``projector`` -> ``[B*V, D]``
+        3. Reshape ``[B, V, D]``, mean-pool -> ``[B, D]``
+        4. Pass fused embedding through each ``omni_head`` -> concatenated logits
+
+        Returns:
+            logits: ``[B, total_pretrained_classes]``
+        """
+        batch_size = images.shape[0]
+        flat = images.view(batch_size * num_views, *images.shape[2:]).to(self.device)
+        with torch.no_grad():
+            x = self.model.forward_features(flat)        # [B*V, encoder_dim]
+            x = self.model.projector(x)                  # [B*V, proj_dim]
+            x = x.view(batch_size, num_views, -1)        # [B, V, proj_dim]
+            x = x.mean(dim=1)                            # [B, proj_dim]
+            head_outputs = [head(x) for head in self.model.omni_heads]
+            logits = torch.cat(head_outputs, dim=1)      # [B, total_classes]
+        return logits
+
     def run_zero_shot_inference(self, 
                                 data_loader: DataLoader, 
                                 evaluation_processor: EvaluationProcessor,
                                 dataset_name: str,
                                 task_type: str,
-                                downstream_target_labels: Optional[List[str]]) -> Dict[str, Any]:
+                                downstream_target_labels: Optional[List[str]],
+                                multi_view: bool = False,
+                                num_views: Optional[int] = None) -> Dict[str, Any]:
         """
         Run zero-shot inference on the dataset.
-        
-        Args:
-            data_loader: DataLoader for test data
-            evaluation_processor: EvaluationProcessor for saving results
-            dataset_name: Name of the dataset
-            task_type: Type of task
-            downstream_target_labels: List of downstream target labels
-            
-        Returns:
-            metrics
+
+        When ``multi_view=True``, per-view embeddings are average-pooled before
+        being passed through pretrained task heads (embedding-level fusion).
         """
-        # Build mapping between downstream labels and matched pretrained Ark labels
         self._target_to_pretrained_label_indices = build_target_to_pretrained_ark_indices(
             dataset_name, task_type, downstream_target_labels
         )
+        if multi_view:
+            logger.info("Multi-view enabled: %d views, embedding-level mean fusion", num_views)
+
         for batch_idx, batch in enumerate(tqdm(data_loader, desc="Zero-shot inference...")):
             images = batch["pixel_values"]
             labels = batch["labels"]
             image_ids = batch["sample_ids"]
             
-            # Get all task head predictions and aggregate
-            head_logits = self.predict_all_heads(images)
+            if multi_view:
+                head_logits = self.predict_all_heads_multiview(images, num_views)
+            else:
+                head_logits = self.predict_all_heads(images)
+
             head_probs = torch.sigmoid(head_logits)
             agg_probs = aggregate_targeted_pred_probs(
                 head_probs,
@@ -386,7 +532,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--model', type=str, required=True, 
                        choices=['medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--data', type=str, required=True, 
-                       choices=['TAIX-Ray', 'VinDr-Mammo', 'SIIM-ACR', 'TBX11', 'VinDr-PCXR'])
+                       choices=['TAIX-Ray', 'VinDr-Mammo', 'VinDr-SpineXR', 'TBX11K', 'NODE21'])
     parser.add_argument('--output-path', type=str, required=True,
                        help="Output directory for results")
     parser.add_argument('--batch-size', type=int, default=16,
@@ -426,6 +572,12 @@ def validate_args(args: argparse.Namespace) -> None:
         if args.use_rsna_head:
             if args.data != "RSNA-Pneumonia" or args.task != "binary":
                 raise ValueError("--use-rsna-head requires --data RSNA-Pneumonia and --task binary.")
+        if args.data in ("VinDr-Mammo", "VinDr-SpineXR"):
+            raise ValueError(
+                f"Ark's pretrained task heads are trained exclusively on chest X-ray "
+                f"datasets and cannot be used for zero-shot transfer on '{args.data}' "
+                f"(out-of-distribution). Use a VLM model instead."
+            )
         
 def get_text_prompts(prompt_file: str, dataset: str, task: str) -> Union[List[str], Dict[str, Any]]:
     """
@@ -457,9 +609,8 @@ def create_output_directories(output_base_dir: str, accelerator: Accelerator) ->
         base=output_base_dir,
         figs=f"{output_base_dir}/figs",
         table=f"{output_base_dir}/table",
-        gradcam=None,  
-        attention=None,  
-        lrp=None
+        gradcam=None,
+        attention=None,
     )
 
 def main():
@@ -514,8 +665,12 @@ def main():
     # Setup configs
     data_config, _ = setup_configs(args.data, args.task)
     
-    # Get data root folder from config
-    data_root_folder = data_config.get_data_root_folder(False)  # No multi-view for zero-shot
+    # Auto-detect multi-view from data config
+    use_multi_view = data_config.is_multi_view
+    multi_view_config = data_config.multi_view
+    num_views = multi_view_config.num_views if multi_view_config else None
+    data_root_folder = data_config.data_root_folder
+
     # If VinDr-Mammo binary, route to binary preprocessed folder if available
     if args.data == "VinDr-Mammo" and args.task == "binary":
         candidate_path = data_root_folder.replace("/birads/", "/binary/")
@@ -524,22 +679,20 @@ def main():
             logger.info(f"Using VinDr-Mammo binary preprocessed data at: {data_root_folder}")
     
     # Setup dataset
-    # For MedSigLIP, use AutoImageProcessor
-    # For Ark, MedImageInsight, and BiomedCLIP, use torchvision.transforms.Compose
     if args.model in ("ark", "medimageinsight", "biomedclip"):
         model_name = None
         _, test_transforms = get_transforms(model_name=args.model)
     else:
         model_name = args.model
         test_transforms = None
-    
+
     test_loader = create_test_loader(
         data_root_folder=data_root_folder,
         task=args.task,
         test_transforms=test_transforms,
         batch_size=args.batch_size,
-        multi_view=False,
-        model_name=model_name
+        multi_view=use_multi_view,
+        model_name=model_name,
     )
     dataset = test_loader.dataset
     
@@ -550,7 +703,8 @@ def main():
     if args.task == "binary":
         class_labels = None
     elif args.task == "multiclass":
-        raw_class_labels = list(set(dataset.labels))
+        # Keep deterministic class-index order aligned with numeric dataset labels.
+        raw_class_labels = sorted(set(dataset.labels))
         class_labels = class_labels_mapping(args.data, raw_class_labels)
     else:
         class_labels = dataset.labels
@@ -576,6 +730,14 @@ def main():
         elif isinstance(text_prompts, list):
             if len(text_prompts) == 0:
                 raise ValueError(f"No prompts available for dataset '{args.data}' and task '{args.task}'")
+            if args.task == "multiclass" and class_labels is not None:
+                if len(text_prompts) != len(class_labels):
+                    raise ValueError(
+                        f"Number of text prompts ({len(text_prompts)}) does not match "
+                        f"number of dataset class labels ({len(class_labels)}) for "
+                        f"multiclass task on '{args.data}'. "
+                        f"Prompts: {text_prompts}, Class labels: {class_labels}"
+                    )
         else:
             raise ValueError(f"Unexpected text_prompts type: {type(text_prompts)}")
 
@@ -587,7 +749,10 @@ def main():
     # Run zero-shot inference
     logger.info(f"Starting zero-shot inference on {len(dataset)} samples")
     if args.model in ("medsiglip", "medimageinsight", "biomedclip"):
-        results = classifier.run_zero_shot_inference(test_loader, evaluation_processor, text_prompts)
+        results = classifier.run_zero_shot_inference(
+            test_loader, evaluation_processor, text_prompts,
+            multi_view=use_multi_view, num_views=num_views,
+        )
     elif args.model == "ark":
         if args.use_rsna_head:
             results = classifier.run_rsna_head_zero_shot_inference(
@@ -601,6 +766,8 @@ def main():
                 dataset_name=args.data,
                 task_type=args.task,
                 downstream_target_labels=class_labels,
+                multi_view=use_multi_view,
+                num_views=num_views,
             )
     logger.info(f"Zero-shot inference with dataset {args.data} using pretrained {args.model} completed!")
     logger.info(f"Saved per-class metrics and curves under {output_paths.table} and {output_paths.figs}")

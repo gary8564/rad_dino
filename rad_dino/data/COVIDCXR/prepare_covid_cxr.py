@@ -3,7 +3,7 @@ import argparse
 import pandas as pd
 import logging
 from rad_dino.loggings.setup import init_logging
-from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
+from rad_dino.utils.preprocessing_utils import copy_files_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -14,6 +14,7 @@ def parse_args():
                         help="Path to the root directory of the COVID-CXR dataset")
     parser.add_argument("--output-dir", type=str, required=True,
                         help="Path to the preprocessed output directory of the dataset")
+    parser.add_argument("--symlink", action="store_true", help="Create symlinks instead of copying source images.")
     return parser.parse_args()
 
 
@@ -39,7 +40,7 @@ def load_split_txt(txt_path: str) -> pd.DataFrame:
     return df
 
 
-def prepare_covid_cxr(path_root: str, output_dir: str):
+def prepare_covid_cxr(path_root: str, output_dir: str, use_symlink: bool = False):
     """
     Preprocess the COVID-CXR dataset for binary classification (COVID-positive vs negative).
     
@@ -47,13 +48,13 @@ def prepare_covid_cxr(path_root: str, output_dir: str):
     This script:
     1. Parses the .txt label files into CSVs with the project's expected format.
     2. Maps string labels ("positive"/"negative") to binary integers (1/0).
-    3. Creates symlinks from the source image directories into the expected
+    3. Copies images from the source image directories into the expected
        images/{split}/ directory structure.
     
     Args:
         path_root: Root directory of the COVID-CXR dataset containing train/, val/, test/
                    folders and train.txt, val.txt, test.txt label files.
-        output_dir: Directory to write preprocessed label CSVs and image symlinks.
+        output_dir: Directory to write preprocessed label CSVs and images.
     """
     label_map = {"positive": 1, "negative": 0}
     
@@ -103,23 +104,24 @@ def prepare_covid_cxr(path_root: str, output_dir: str):
         logger.info(f"Saved {split}_labels.csv with {len(df_labels)} entries.")
         logger.info(f"  Label distribution: {df_labels['label'].value_counts().to_dict()}")
         
-        # 5) SYMLINK IMAGES
+        # 5) COPY IMAGES
         src_folder = os.path.join(path_root, split)
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
         
         # Normalise extension to lowercase so the dataset loader can find it
         # (handles the rare .JPG → .jpg case)
-        symlink_pairs = []
+        file_pairs = []
         for _, row in df.iterrows():
             src = os.path.join(src_folder, row["filename"])
             stem = row["image_id"]
             ext = os.path.splitext(row["filename"])[1].lower()
             dst = os.path.join(dst_folder, f"{stem}{ext}")
-            symlink_pairs.append((src, dst))
+            file_pairs.append((src, dst))
         
-        create_symlinks_parallel(symlink_pairs)
-        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
+        copy_files_parallel(file_pairs, use_symlink=use_symlink)
+        action = "Symlinked" if use_symlink else "Copied"
+        logger.info(f"{action} {len(file_pairs)} images to {dst_folder}")
     
     logger.info(f"Preprocessing COVID-CXR complete! The processed dataset is saved in {output_dir}")
 
@@ -127,7 +129,7 @@ def prepare_covid_cxr(path_root: str, output_dir: str):
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    prepare_covid_cxr(args.path_root, args.output_dir)
+    prepare_covid_cxr(args.path_root, args.output_dir, use_symlink=args.symlink)
 
 
 if __name__ == "__main__":

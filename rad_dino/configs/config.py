@@ -1,35 +1,25 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Any
+from typing import Optional, Any
 from dataclasses import dataclass
 import torch
 from rad_dino.models.base import BaseClassifier
 
-# ------------ multi-view config ------------
 class MultiViewConfig(BaseModel):
     """Configuration for multi-view processing"""
     num_views: int = Field(default=4, description="Number of views to process")
     view_fusion_type: str = Field(default="mean", description="Fusion strategy: mean, weighted_mean, or mlp_adapter")
     adapter_dim: Optional[int] = Field(default=None, description="Hidden dimension for MLP adapters")
     view_fusion_hidden_dim: Optional[int] = Field(default=None, description="Hidden dimension for fusion MLP")
-    data_root_folder_multi_view: Optional[str] = Field(default=None, description="Data root folder for multi-view data")
 
-# ------------ data config ------------
 class DataConfig(BaseModel):
     data_root_folder: str = Field(..., description="Root folder containing the dataset")
     num_workers: int = Field(..., description="Number of workers for data loading")
     multi_view: Optional[MultiViewConfig] = Field(default=None, description="Multi-view configuration")
-    
-    def get_data_root_folder(self, use_multi_view: bool = False) -> str:
-        """Get the appropriate data root folder based on multi-view setting"""
-        if use_multi_view and self.multi_view and self.multi_view.data_root_folder_multi_view:
-            return self.multi_view.data_root_folder_multi_view
-        return self.data_root_folder
-    
-    def get_multi_view_config(self, use_multi_view: bool = False) -> Optional[MultiViewConfig]:
-        """Get multi-view configuration if enabled"""
-        if use_multi_view and self.multi_view:
-            return self.multi_view
-        return None
+
+    @property
+    def is_multi_view(self) -> bool:
+        """Auto-detect whether this dataset requires multi-view processing from the config."""
+        return self.multi_view is not None
 
 class ClassificationDataConfig(DataConfig):
     pass
@@ -37,7 +27,7 @@ class ClassificationDataConfig(DataConfig):
 class RegressionDataConfig(DataConfig):
     pass
 
-# ------------ training config ------------
+# Training config
 class OptimizerConfig(BaseModel):
     base_lr: float = Field(..., description="Base learning rate")
     weight_decay: float = Field(..., description="Weight decay for optimizer")
@@ -57,7 +47,7 @@ class TrainConfig(BaseModel):
     lr_scheduler: Optional[LRSchedulerConfig] = None
     early_stopping: Optional[EarlyStoppingConfig] = None
 
-# ------------ inference config ------------
+# Inference config
 @dataclass
 class InferenceConfig:
     """Configuration class for inference parameters"""
@@ -67,16 +57,18 @@ class InferenceConfig:
     model_path: str
     output_path: str
     batch_size: int = 16
-    multi_view: bool = False
     optimize_compute: bool = False
     compile: bool = False
     show_attention: bool = False
-    show_lrp: bool = False
     show_gradcam: bool = False
     show_feature_maps: bool = False
     attention_threshold: Optional[float] = None
     save_heads: Optional[str] = None
     compute_rollout: bool = False
+    compute_gradient_rollout: bool = False
+    max_visualization_samples: int = 24
+    min_positive_visualization_labels: int = 20
+    visualization_sample_ids: Optional[str] = None
     medimageinsight_path: Optional[str] = None
 
 @dataclass
@@ -95,5 +87,4 @@ class OutputPaths:
     table: str
     gradcam: Optional[str] = None
     attention: Optional[str] = None
-    lrp: Optional[str] = None
     feature_maps: Optional[str] = None

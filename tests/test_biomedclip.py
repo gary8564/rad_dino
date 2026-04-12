@@ -26,10 +26,6 @@ class TestBiomedCLIPClassifier(unittest.TestCase):
 
         self.mock_backbone.encode_image = _mock_encode_image
 
-    # ------------------------------------------------------------------
-    # Initialization
-    # ------------------------------------------------------------------
-
     def test_initialization(self):
         """Test BiomedCLIPClassifier initializes correctly."""
         model = BiomedCLIPClassifier(
@@ -54,10 +50,6 @@ class TestBiomedCLIPClassifier(unittest.TestCase):
         self.assertTrue(model.multi_view)
         self.assertEqual(model.num_views, 4)
         self.assertEqual(model.view_fusion_type, "mean")
-
-    # ------------------------------------------------------------------
-    # Single-view forward
-    # ------------------------------------------------------------------
 
     def test_single_view_forward(self):
         """Test forward pass with a single-view input tensor."""
@@ -86,10 +78,6 @@ class TestBiomedCLIPClassifier(unittest.TestCase):
         self.assertEqual(logits.shape, (1, self.num_classes))
         self.assertIsNone(attention_maps)
         self.assertTrue(torch.all(torch.isfinite(logits)))
-
-    # ------------------------------------------------------------------
-    # Multi-view forward (all fusion strategies)
-    # ------------------------------------------------------------------
 
     def test_multi_view_forward_mean(self):
         """Test multi-view forward pass with mean fusion."""
@@ -159,10 +147,6 @@ class TestBiomedCLIPClassifier(unittest.TestCase):
                 self.assertIsNone(attention_maps)
                 self.assertTrue(torch.all(torch.isfinite(logits)))
 
-    # ------------------------------------------------------------------
-    # Validation / error handling
-    # ------------------------------------------------------------------
-
     def test_invalid_fusion_type(self):
         """Test that an invalid fusion type raises AssertionError."""
         with self.assertRaises(AssertionError):
@@ -217,10 +201,6 @@ class TestBiomedCLIPClassifier(unittest.TestCase):
         with self.assertRaises(ValueError):
             model(x)
 
-    # ------------------------------------------------------------------
-    # Head / strategy initialization
-    # ------------------------------------------------------------------
-
     def test_head_initialization(self):
         """Test that the classification head is properly initialised."""
         model = BiomedCLIPClassifier(
@@ -246,10 +226,6 @@ class TestBiomedCLIPClassifier(unittest.TestCase):
         self.assertTrue(callable(model.input_reshape_strategies[False]))
         self.assertTrue(callable(model.input_reshape_strategies[True]))
 
-    # ------------------------------------------------------------------
-    # Gradient flow
-    # ------------------------------------------------------------------
-
     def test_gradient_flow(self):
         """Verify that gradients flow through the classifier head."""
         model = BiomedCLIPClassifier(
@@ -264,10 +240,6 @@ class TestBiomedCLIPClassifier(unittest.TestCase):
 
         self.assertIsNotNone(model.classifier.weight.grad)
         self.assertIsNotNone(model.classifier.bias.grad)
-
-    # ------------------------------------------------------------------
-    # Edge cases
-    # ------------------------------------------------------------------
 
     def test_binary_classification(self):
         """Test forward pass with binary classification (1 output)."""

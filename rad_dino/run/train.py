@@ -1,55 +1,45 @@
+"""Main training entry point for fine-tuning and linear probing of vision foundation models."""
+
 import argparse
 import logging
 import os
 from datetime import datetime
-import torch 
+
+import torch
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
-from torch.utils.data import Subset
-import wandb
 from dotenv import load_dotenv, find_dotenv
+from torch.utils.data import Subset
 
-from rad_dino.utils.config_utils import setup_configs
 from rad_dino.data.data_loader import load_data
-from rad_dino.utils.loss_utils import get_class_weights
-from rad_dino.utils.transforms import get_transforms
-from rad_dino.train.train_utils import get_criterion, get_eval_metrics
-from rad_dino.utils.model_loader import load_pretrained_model
-from rad_dino.models.dino import DinoClassifier
-from rad_dino.models.siglip import MedSigClassifier
-from rad_dino.models.ark import ArkClassifier, load_prtrained_ark_model
-from rad_dino.models.medimageinsight import MedImageInsightClassifier, load_medimageinsight_model
-from rad_dino.models.biomedclip import BiomedCLIPClassifier, load_biomedclip_model
 from rad_dino.loggings.setup import init_logging
+from rad_dino.models.ark import ArkClassifier, load_pretrained_ark_model
+from rad_dino.models.biomedclip import BiomedCLIPClassifier, load_biomedclip_model
+from rad_dino.models.dino import DinoClassifier
+from rad_dino.models.medimageinsight import MedImageInsightClassifier, load_medimageinsight_model
+from rad_dino.models.siglip import MedSigClassifier
+from rad_dino.train.train_utils import get_criterion, get_eval_metrics
 from rad_dino.train.trainer import Trainer
+from rad_dino.utils.config_utils import setup_configs, MODEL_REPOS
+from rad_dino.utils.loss_utils import get_class_weights
+from rad_dino.utils.model_loader import load_pretrained_model
+from rad_dino.utils.transforms import get_transforms
 
 load_dotenv(find_dotenv())
 
 init_logging()
 logger = logging.getLogger(__name__)
 
-CURR_DIR = os.path.dirname(os.path.realpath(__file__))
 CURR_TIME = datetime.now().strftime("%Y_%m_%d_%H%M%S")
+CURR_DIR = os.path.dirname(os.path.realpath(__file__))
 DEFAULT_MEDIMAGEINSIGHT_PATH = os.path.normpath(os.path.join(CURR_DIR, "..", "models", "MedImageInsights"))
-MODEL_REPOS = {
-    "rad-dino": "microsoft/rad-dino",
-    "dinov2-base": "facebook/dinov2-base", 
-    "dinov2-small": "facebook/dinov2-small",
-    "dinov2-large": "facebook/dinov2-large",
-    "dinov3-small-plus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
-    "dinov3-base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
-    "dinov3-large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-    "medsiglip": "google/medsiglip-448",
-    "ark": "microsoft/swin-large-patch4-window12-384-in22k"
-}
 
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv2/DINOv3/MedSigLIP/ARK/BiomedCLIP linear probing", add_help=add_help)
     parser.add_argument('--task', type=str, required=True, choices=['multilabel', 'multiclass', 'binary'])
-    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray', 'NODE21', 'COVID-CXR', 'VinDr-SpineXR', 'VinDr-PCXR', 'TBX11', 'SIIM-ACR'])
-    parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
+    parser.add_argument('--data', type=str, required=True, choices=['VinDr-CXR', 'RSNA-Pneumonia', 'VinDr-Mammo', 'TAIX-Ray', 'NODE21', 'COVID-CXR', 'VinDr-SpineXR', 'VinDr-PCXR', 'TBX11K', 'SIIM-ACR'])
+    parser.add_argument('--model', type=str, required=True, choices=['rad-dino', 'dinov2-small', 'dinov2-base', 'dinov2-large', 'dinov2-large-reg', 'dinov3-small-plus', 'dinov3-base', 'dinov3-large', 'medsiglip', 'ark', 'medimageinsight', 'biomedclip']) 
     parser.add_argument('--kfold', type=int, default=None, help="Number of folds for cross-validation")
-    parser.add_argument('--multi-view', action='store_true', help="Enable multi-view processing for mammography data")
     parser.add_argument(
         "--unfreeze-backbone",
         action="store_true",
@@ -87,7 +77,7 @@ def get_args_parser(add_help: bool = True):
     )
     parser.add_argument(
         "--output-dir",
-        default="/hpcwork/qj474765/runs/",
+        required=True,
         type=str,
         help="Output directory to save logs and checkpoints",
     )
@@ -124,24 +114,28 @@ def get_args_parser(add_help: bool = True):
         help="Compile the model with torch.compile (in-place) for faster training. "
              "Checkpoints are fully compatible whether this flag is on or off.",
     )
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging. Requires the 'wandb' to be installed and wandb API key.",
+    )
     return parser
 
 def setup(args, accelerator: Accelerator):
     # Setup configs
     data_config, train_config = setup_configs(args.data, args.task) 
     num_workers = data_config.num_workers
-    
-    # Get multi-view configuration
-    multi_view_config = data_config.get_multi_view_config(args.multi_view)
+    use_multi_view = data_config.is_multi_view
+    multi_view_config = data_config.multi_view
     
     # Get data augmentation transforms
     train_transforms, val_transforms = get_transforms(args.model)
    
     # Data setup
     batch_size = train_config.batch_size
-    data_root_folder = data_config.get_data_root_folder(args.multi_view)
+    data_root_folder = data_config.data_root_folder
     
-    logger.info(f"Loading data for {args.data} with kfold={args.kfold} and multi_view={args.multi_view}")
+    logger.info(f"Loading data for {args.data} with kfold={args.kfold} and multi_view={use_multi_view}")
     data_loader = load_data(
         data_root_folder,
         args.task,
@@ -151,7 +145,7 @@ def setup(args, accelerator: Accelerator):
         num_workers,
         accelerator.gradient_accumulation_steps,
         kfold=args.kfold,
-        multi_view=args.multi_view,
+        multi_view=use_multi_view,
         train_subset_fraction=args.train_subset,
     )
 
@@ -178,7 +172,7 @@ def setup(args, accelerator: Accelerator):
         model = BiomedCLIPClassifier(
             backbone,
             num_classes=num_classes,
-            multi_view=args.multi_view,
+            multi_view=use_multi_view,
             num_views=multi_view_config.num_views if multi_view_config else None,
             view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
             adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -194,7 +188,7 @@ def setup(args, accelerator: Accelerator):
         model = MedImageInsightClassifier(
             backbone,
             num_classes=num_classes,
-            multi_view=args.multi_view,
+            multi_view=use_multi_view,
             num_views=multi_view_config.num_views if multi_view_config else None,
             view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
             adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -211,24 +205,23 @@ def setup(args, accelerator: Accelerator):
                    f"use_backbone_projector={use_backbone_projector}")
         
         # Load Ark backbone
-        backbone = load_prtrained_ark_model(
+        backbone = load_pretrained_ark_model(
             checkpoint_path=ark_checkpoint_path,
-            num_classes_list=[14,14,14,3,6,1],  # This will be overridden by ArkClassifier
+            num_classes_list=[14, 14, 14, 3, 6, 1],
             img_size=768,
             patch_size=4,
             window_size=12,
             embed_dim=192,
             depths=(2, 2, 18, 2),
             num_heads=(6, 12, 24, 48),
-            projector_features=1376,  # Ark default projector features
+            projector_features=1376,
             use_mlp=False,
-            return_attention=args.return_output_attentions,
             grad_checkpointing=args.grad_checkpointing,
-            device=accelerator.device
+            device=str(accelerator.device),
         )
         model = ArkClassifier(backbone, 
                                num_classes=num_classes, 
-                               multi_view=args.multi_view, 
+                               multi_view=use_multi_view, 
                                num_views=multi_view_config.num_views if multi_view_config else None,
                                view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
                                adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -239,7 +232,7 @@ def setup(args, accelerator: Accelerator):
         backbone = load_pretrained_model(model_repo)
         model = MedSigClassifier(backbone, 
                                num_classes=num_classes, 
-                               multi_view=args.multi_view, 
+                               multi_view=use_multi_view, 
                                num_views=multi_view_config.num_views if multi_view_config else None,
                                view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
                                adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -251,7 +244,7 @@ def setup(args, accelerator: Accelerator):
         backbone = load_pretrained_model(model_repo)
         model = DinoClassifier(backbone, 
                                num_classes=num_classes, 
-                               multi_view=args.multi_view, 
+                               multi_view=use_multi_view, 
                                num_views=multi_view_config.num_views if multi_view_config else None,
                                view_fusion_type=multi_view_config.view_fusion_type if multi_view_config else None,
                                adapter_dim=multi_view_config.adapter_dim if multi_view_config else None,
@@ -296,16 +289,17 @@ def train_model(args, checkpoint_dir, accelerator: Accelerator):
     # Early stopping callback setup
     early_stopper_config = train_config.early_stopping
     patience = early_stopper_config.patience if early_stopper_config else None
-
-    # Initialize wandb
-    if accelerator.is_main_process:
+    
+    # Weights & Biases logging
+    if args.wandb and accelerator.is_main_process:
+        import wandb
         wandb_name = f"{CURR_TIME}_{args.data}_{args.model}"
         if args.progressive_unfreeze:
             wandb_name += "_progressive_unfreeze"
         elif args.unfreeze_backbone:
             wandb_name += "_unfreeze_backbone"
         if is_kfold:
-            wandb_name += f"_kfold"
+            wandb_name += "_kfold"
         if args.weighted_loss:
             wandb_name += "_weighted_loss"
         if args.resume:
@@ -372,12 +366,7 @@ def main(args):
         checkpoint_folder_name += "_progressive_unfreeze"
     elif args.unfreeze_backbone:
         checkpoint_folder_name += "_unfreeze_backbone"
-    if args.multi_view:
-        checkpoint_folder_name += "_multi_view"
-    if not os.path.isabs(args.output_dir):
-        output_dir = os.path.join(CURR_DIR, args.output_dir)
-    else:
-        output_dir = args.output_dir
+    output_dir = os.path.abspath(args.output_dir)
     checkpoint_dir = os.path.join(output_dir, checkpoint_folder_name)
     if args.resume_checkpoint_dir:
         resume_dir = args.resume_checkpoint_dir

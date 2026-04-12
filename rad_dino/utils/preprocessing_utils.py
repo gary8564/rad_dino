@@ -4,6 +4,7 @@ import pydicom
 import matplotlib.pyplot as plt
 import cv2
 import os
+import shutil
 import uuid
 from pydicom.pixels import apply_rescale, apply_voi_lut
 from PIL import Image
@@ -14,19 +15,21 @@ from rad_dino.loggings.setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
 
-def create_symlinks_parallel(
-    symlink_pairs: Sequence[tuple[str, str]],
+def copy_files_parallel(
+    file_pairs: Sequence[tuple[str, str]],
     max_workers: int = 16,
     raise_on_missing: bool = False,
+    use_symlink: bool = False,
 ) -> None:
     """
-    Create symlinks in parallel using a thread pool.
+    Copy files in parallel using either copy or symlink operations.
 
     Args:
-        symlink_pairs: Sequence of (src, dst) path pairs.
+        file_pairs: Sequence of (src, dst) path pairs.
         max_workers: Number of threads to use.
         raise_on_missing: If True, raise FileNotFoundError when a source file
             is missing. If False, log a warning and skip.
+        use_symlink: If True, create symlinks. Otherwise copy files.
     """
     def _create_one(src: str, dst: str) -> str | None:
         if not os.path.exists(src):
@@ -34,19 +37,90 @@ def create_symlinks_parallel(
                 raise FileNotFoundError(f"Source image not found: {src}")
             return f"Source image not found: {src}"
         tmp = f"{dst}.{uuid.uuid4().hex}"
-        os.symlink(src, tmp)
+        if use_symlink:
+            os.symlink(src, tmp)
+        else:
+            shutil.copy2(src, tmp)
         os.replace(tmp, dst)
         return None
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_create_one, src, dst): src
-            for src, dst in symlink_pairs
+            for src, dst in file_pairs
         }
         for future in as_completed(futures):
             warning = future.result()
             if warning:
                 logger.warning(warning)
+
+def convert_dicom_to_png(
+    src_dcm: str,
+    dst_png: str,
+    skip_if_newer: bool = True,
+    png_compress_level: int = 3,
+) -> str | None:
+    """
+    Convert a DICOM file to a grayscale PNG using pydicom (no orientation metadata).
+
+    Uses raw pixel data with MONOCHROME1 fix and min-max normalization
+    to [0, 255]. This avoids the orientation rotation that SimpleITK
+    applies from DICOM direction cosines.
+
+    Args:
+        src_dcm: Path to source DICOM.
+        dst_png: Path to output PNG.
+        skip_if_newer: If True, skip conversion when dst exists and is newer than src.
+        png_compress_level: PNG compression (1=fast/large, 9=slow/small). Default 3.
+
+    Returns:
+        None on success, or a warning message string on failure.
+    """
+    try:
+        if skip_if_newer and os.path.exists(dst_png) and os.path.exists(src_dcm):
+            if os.path.getmtime(dst_png) >= os.path.getmtime(src_dcm):
+                return None  # Already up to date
+        arr = dicom2array(src_dcm)
+        Image.fromarray(arr, mode="L").save(dst_png, compress_level=png_compress_level)
+        return None
+    except Exception as e:
+        return f"Failed to convert {src_dcm}: {e}"
+
+
+def convert_dicoms_to_pngs_parallel(
+    pairs: Sequence[tuple[str, str]],
+    max_workers: int = 32,
+    raise_on_error: bool = False,
+    skip_if_newer: bool = True,
+    png_compress_level: int = 3,
+) -> None:
+    """Convert DICOM files to PNGs in parallel.
+
+    Args:
+        pairs: Sequence of (src_dcm, dst_png) path pairs.
+        max_workers: Number of threads. 
+        raise_on_error: If True, raise on first failure.
+        skip_if_newer: If True, skip when dst exists and is newer than src (fast re-runs).
+        png_compress_level: PNG compression (1=fast, 9=slow). Default 3.
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                convert_dicom_to_png,
+                src,
+                dst,
+                skip_if_newer=skip_if_newer,
+                png_compress_level=png_compress_level,
+            ): src
+            for src, dst in pairs
+        }
+        for future in as_completed(futures):
+            warning = future.result()
+            if warning:
+                if raise_on_error:
+                    raise RuntimeError(warning)
+                logger.warning(warning)
+
 
 def dicom2array(path, voi_lut = True, fix_monochrome = True):
     """
@@ -76,8 +150,8 @@ def dicom2array(path, voi_lut = True, fix_monochrome = True):
         # Apply VOI LUT if requested and available to transform raw DICOM data to "human-friendly" view
         if voi_lut:
             data = dicom.pixel_array
-            data = apply_rescale(data, dicom) 
-            data = apply_voi_lut(dicom.pixel_array, dicom)
+            data = apply_rescale(data, dicom)
+            data = apply_voi_lut(data, dicom)
         else:
             data = dicom.pixel_array
 
@@ -155,7 +229,7 @@ def draw_bboxes(img, tl, br, rgb, label="", label_location="tl", opacity=0.1, li
         FONT_THICKNESS = 3
         FONT_LINE_TYPE = cv2.LINE_AA
         
-        if type(label)==str:
+        if isinstance(label, str):
             LABEL = label.upper().replace(" ", "_")
         else:
             LABEL = f"CLASS_{label:02}"

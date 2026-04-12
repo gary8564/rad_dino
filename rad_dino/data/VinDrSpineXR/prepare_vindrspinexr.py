@@ -4,7 +4,7 @@ import pandas as pd
 import logging
 from typing import Union
 from rad_dino.loggings.setup import init_logging
-from rad_dino.utils.preprocessing_utils import create_symlinks_parallel
+from rad_dino.utils.preprocessing_utils import copy_files_parallel
 init_logging()
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ def parse_args():
                         help="Specify an integer k for top-k classes (by prevalence) "
                              "or an explicit list of class names. "
                              "If not provided, all 8 classes (including 'No finding') are used.")
+    parser.add_argument("--symlink", action="store_true", help="Create symlinks instead of copying source images.")
     return parser.parse_args()
 
 
@@ -112,7 +113,8 @@ def filter_classes(df: pd.DataFrame,
 
 
 def prepare_vindrspinexr(path_root: str, output_dir: str,
-                         class_labels: Union[int, str, list[str], None]):
+                         class_labels: Union[int, str, list[str], None],
+                         use_symlink: bool = False):
     """
     Preprocess the VinDr-SpineXR dataset for multilabel classification.
 
@@ -128,7 +130,7 @@ def prepare_vindrspinexr(path_root: str, output_dir: str,
     3. Optionally filter to a subset of classes.
     4. Verify images exist on disk and drop missing entries.
     5. Save {split}_labels.csv with image_id as index.
-    6. Create symlinks from train_images/ and test_images/ into images/{split}/.
+    6. Copy or symlink files from train_images/ and test_images/ into images/{split}/.
 
     Args:
         path_root: Root directory containing annotations/, train_images/, test_images/.
@@ -154,14 +156,14 @@ def prepare_vindrspinexr(path_root: str, output_dir: str,
     logger.info(f"Lesion types in train: {sorted(df_train_annot['lesion_type'].unique())}")
 
     # 2) CONVERT BOUNDING-BOX ANNOTATIONS TO PER-IMAGE MULTI-HOT LABELS
-    class_labels = list(CLASS_LABELS)
-    df_train = annotations_to_multilabel(df_train_annot, class_labels)
-    df_test = annotations_to_multilabel(df_test_annot, class_labels)
+    all_labels = list(CLASS_LABELS)
+    df_train = annotations_to_multilabel(df_train_annot, all_labels)
+    df_test = annotations_to_multilabel(df_test_annot, all_labels)
 
     logger.info(f"Built multi-hot labels: train={len(df_train)}, test={len(df_test)}")
 
     # 3) OPTIONALLY FILTER CLASSES
-    label_cols = class_labels
+    label_cols = all_labels
     if class_labels is not None:
         if isinstance(class_labels, str):
             class_labels = [class_labels]
@@ -217,19 +219,20 @@ def prepare_vindrspinexr(path_root: str, output_dir: str,
     logger.info(f"Saved train_labels.csv ({len(df_train)} rows) and "
                 f"test_labels.csv ({len(df_test)} rows)")
 
-    # 6) SYMLINK DICOM IMAGES
+    # 6) COPY DICOM IMAGES
     for split, df in [("train", df_train), ("test", df_test)]:
         src_folder = split_to_img_dir[split]
         dst_folder = os.path.join(output_dir, "images", split)
         os.makedirs(dst_folder, exist_ok=True)
 
-        symlink_pairs = [
+        file_pairs = [
             (os.path.join(src_folder, f"{image_id}.dicom"),
              os.path.join(dst_folder, f"{image_id}.dcm"))
             for image_id in df.index
         ]
-        create_symlinks_parallel(symlink_pairs)
-        logger.info(f"Symlinked {len(symlink_pairs)} images to {dst_folder}")
+        copy_files_parallel(file_pairs, use_symlink=use_symlink)
+        action = "Symlinked" if use_symlink else "Copied"
+        logger.info(f"{action} {len(file_pairs)} images to {dst_folder}")
 
     logger.info(f"Preprocessing VinDr-SpineXR complete! Output saved to {output_dir}")
 
@@ -246,7 +249,7 @@ def main():
         except ValueError:
             class_labels = class_labels[0]
 
-    prepare_vindrspinexr(args.path_root, args.output_dir, class_labels)
+    prepare_vindrspinexr(args.path_root, args.output_dir, class_labels, use_symlink=args.symlink)
 
 
 if __name__ == "__main__":

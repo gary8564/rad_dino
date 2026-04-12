@@ -76,8 +76,13 @@ DATASET_LABEL_ALIASES: Dict[str, Dict[str, List[str]]] = {
         "pleural effusion": ["pleural effusion", "effusion"],
         "pulmonary opacities": ["lung opacity"],
         "atelectasis": ["atelectasis"]
+    },
+    "NODE21": {
+        "nodule": ["nodule", "mass", "lung lesion", "lung tumor"]
+    },
+    "TBX11K": {
+        "healthy": ["no finding", "normal"],
+        "other diseases": ["other diseases"],
+        "tuberculosis": ["tuberculosis"]
     }
 }
-
-
-
